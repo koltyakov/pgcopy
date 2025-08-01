@@ -1,24 +1,24 @@
 # Utilities container
 
-Start Postgres instance with:
+Start source Postgres instance with:
 
 ```bash
 docker run --rm -d \
   --name postgres \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=postgres \
-  -p 5432:5432 \
-  -v postgres_data:/var/lib/postgresql/data \
+  -p 5442:5432 \
+  -v pg_copy_source_data:/var/lib/postgresql/data \
   postgres:alpine
 ```
 
-Target database:
+Start target Postgres instance with:
 
 ```bash
 docker run --rm -d \
   --name postgres_target \
   -e POSTGRES_USER=postgres \
   -e POSTGRES_PASSWORD=postgres \
-  -p 5442:5432 \
+  -p 5452:5432 \
   postgres:alpine
 ```

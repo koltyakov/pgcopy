@@ -95,6 +95,7 @@ pgcopy copy \
 Copy data from source to destination database.
 
 **Flags:**
+
 - `--source, -s`: Source database connection string
 - `--dest, -d`: Destination database connection string
 - `--source-file`: Source database connection config file

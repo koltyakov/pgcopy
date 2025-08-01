@@ -7,23 +7,27 @@ Successfully implemented `pgcopy`, a high-performance Go CLI tool for efficientl
 ## Key Features Implemented
 
 ### 🚀 Core Functionality
+
 - **Parallel Processing**: Configurable worker pools for concurrent table copying
 - **Batch Processing**: Configurable batch sizes for memory-efficient operations
 - **Transaction Safety**: Uses transactions to ensure data consistency
 - **Foreign Key Handling**: Temporarily disables constraints during copy operations
 
 ### 📊 Monitoring & Progress
+
 - **Real-time Progress**: Periodic progress updates during long-running operations
 - **Statistics Tracking**: Comprehensive copy statistics with performance metrics
 - **Dry Run Mode**: Preview operations without actual data copying
 
 ### 🔧 Configuration Options
+
 - **Connection Strings**: Direct PostgreSQL connection string support
 - **Configuration Files**: External config file support for credentials
 - **Table Filtering**: Include/exclude specific tables or schemas
 - **Flexible Parameters**: Configurable parallel workers and batch sizes
 
 ### � Advanced Foreign Key Management
+
 - **Automatic Detection**: Discovers all foreign key constraints in target tables
 - **Circular Dependency Handling**: Resolves complex FK relationships including cycles
 - **Smart Strategy Selection**: Uses replica mode when available, falls back to drop/recreate
@@ -65,24 +69,28 @@ pgcopy/
 ### Key Components
 
 #### 1. CLI Framework (Cobra)
+
 - Command-line argument parsing
 - Subcommand structure
 - Help system generation
 - Configuration management with Viper
 
 #### 2. Database Connection Management
+
 - PostgreSQL driver integration (`lib/pq`)
 - Connection pooling optimization
 - Connection string and file-based configuration
 - Error handling and validation
 
 #### 3. Parallel Processing Engine
+
 - Worker pool implementation
 - Channel-based work distribution
 - Concurrent table processing
 - Error collection and reporting
 
 #### 4. Data Transfer Logic
+
 - Batch-based copying for memory efficiency
 - Primary key or ctid-based ordering for consistency
 - Transaction-based operations
@@ -91,12 +99,14 @@ pgcopy/
 ## Performance Optimizations
 
 ### Database Level
+
 - **Connection Pooling**: Optimized connection pool sizes
 - **Foreign Key Constraints**: Temporarily disabled during copy
 - **Transaction Batching**: Batch inserts within transactions
 - **Ordered Pagination**: Primary key-based ordering for consistent results
 
 ### Application Level
+
 - **Parallel Workers**: Configurable worker pools (default: 4)
 - **Batch Size**: Configurable batch sizes (default: 1000)
 - **Memory Management**: Efficient memory usage with streaming
@@ -105,6 +115,7 @@ pgcopy/
 ## Usage Examples
 
 ### Basic Copy
+
 ```bash
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
@@ -112,6 +123,7 @@ pgcopy copy \
 ```
 
 ### High Performance Copy
+
 ```bash
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
@@ -121,6 +133,7 @@ pgcopy copy \
 ```
 
 ### Selective Copy
+
 ```bash
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
@@ -129,11 +142,13 @@ pgcopy copy \
 ```
 
 ### Table Listing
+
 ```bash
 pgcopy list --source "postgres://user:pass@host:5432/db"
 ```
 
 ### Dry Run
+
 ```bash
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
@@ -144,16 +159,19 @@ pgcopy copy \
 ## Quality Assurance
 
 ### Testing
+
 - **Unit Tests**: Comprehensive unit tests for core functionality
 - **Integration Tests**: Automated integration test suite
 - **Configuration Validation**: Input validation and error handling
 
 ### Build System
+
 - **Makefile**: Automated build process
 - **Cross-Platform**: Support for multiple platforms (Linux, macOS, Windows)
 - **Dependency Management**: Go modules for dependency management
 
 ### Code Quality
+
 - **Error Handling**: Comprehensive error handling throughout
 - **Logging**: Structured logging for debugging and monitoring
 - **Documentation**: Extensive inline documentation and README
@@ -161,11 +179,13 @@ pgcopy copy \
 ## Dependencies
 
 ### Core Dependencies
+
 - **github.com/lib/pq**: PostgreSQL driver
 - **github.com/spf13/cobra**: CLI framework
 - **github.com/spf13/viper**: Configuration management
 
 ### Development Tools
+
 - **Go 1.21+**: Modern Go version
 - **Make**: Build automation
 - **Git**: Version control
@@ -173,6 +193,7 @@ pgcopy copy \
 ## Installation & Deployment
 
 ### From Source
+
 ```bash
 git clone https://github.com/koltyakov/pgcopy.git
 cd pgcopy
@@ -180,11 +201,13 @@ make build
 ```
 
 ### System Installation
+
 ```bash
 make install  # Installs to /usr/local/bin/
 ```
 
 ### Cross-Platform Builds
+
 ```bash
 make build-all  # Builds for Linux, macOS, Windows
 ```
@@ -192,6 +215,7 @@ make build-all  # Builds for Linux, macOS, Windows
 ## Future Enhancements
 
 ### Potential Improvements
+
 1. **Resume Capability**: Implement checkpoint-based resume functionality
 2. **Compression**: Add data compression for network transfers
 3. **Schema Validation**: Automatic schema compatibility checking
@@ -199,6 +223,7 @@ make build-all  # Builds for Linux, macOS, Windows
 5. **CDC Support**: Change Data Capture for incremental updates
 
 ### Performance Optimizations
+
 1. **Streaming**: Direct streaming without intermediate storage
 2. **Parallel Schema Copy**: Parallel copying within single tables
 3. **Adaptive Batching**: Dynamic batch size adjustment

@@ -35,8 +35,6 @@ tmp/
 # pgcopy specific
 bin/
 dist/
-*.conf
-!examples/*.conf
 pgcopy
 pgcopy-*
 
