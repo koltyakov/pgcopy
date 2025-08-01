@@ -31,6 +31,7 @@ type Copier struct {
 	config     *Config
 	sourceDB   *sql.DB
 	destDB     *sql.DB
+	fkManager  *ForeignKeyManager
 	mu         sync.Mutex
 	stats      *CopyStats
 	lastUpdate time.Time
@@ -38,12 +39,14 @@ type Copier struct {
 
 // CopyStats tracks copying statistics
 type CopyStats struct {
-	TablesProcessed int64
-	RowsCopied      int64
-	TotalTables     int64
-	TotalRows       int64
-	StartTime       time.Time
-	Errors          []error
+	TablesProcessed     int64
+	RowsCopied          int64
+	TotalTables         int64
+	TotalRows           int64
+	ForeignKeysDetected int64
+	ForeignKeysDropped  int64
+	StartTime           time.Time
+	Errors              []error
 }
 
 // TableInfo holds information about a table to be copied
@@ -112,6 +115,9 @@ func New(config *Config) (*Copier, error) {
 	c.destDB.SetMaxIdleConns(config.Parallel)
 	c.destDB.SetConnMaxLifetime(time.Hour)
 
+	// Initialize foreign key manager
+	c.fkManager = NewForeignKeyManager(c.destDB)
+
 	return c, nil
 }
 
@@ -159,18 +165,25 @@ func (c *Copier) Copy() error {
 			len(tables), totalRows, c.config.Parallel)
 	}
 
-	// Disable foreign key checks on destination to avoid constraint issues
-	if err := c.disableForeignKeys(); err != nil {
-		log.Printf("Warning: failed to disable foreign keys: %v", err)
+	// Detect and handle foreign keys
+	if err := c.fkManager.DetectForeignKeys(tables); err != nil {
+		return fmt.Errorf("failed to detect foreign keys: %w", err)
 	}
+
+	// Try to use replica mode first, fall back to dropping FKs if needed
+	if err := c.fkManager.TryUseReplicaMode(); err != nil {
+		return fmt.Errorf("failed to setup foreign key handling: %w", err)
+	}
+
+	// Ensure foreign keys are restored even if copy fails
+	defer func() {
+		if restoreErr := c.fkManager.RestoreAllForeignKeys(); restoreErr != nil {
+			log.Printf("Critical: failed to restore foreign keys: %v", restoreErr)
+		}
+	}()
 
 	// Copy tables in parallel
 	err = c.copyTablesParallel(tables)
-
-	// Re-enable foreign key checks
-	if fkErr := c.enableForeignKeys(); fkErr != nil {
-		log.Printf("Warning: failed to re-enable foreign keys: %v", fkErr)
-	}
 
 	if err != nil {
 		return err
@@ -364,18 +377,6 @@ func readConnectionFromFile(filename string) (string, error) {
 	return string(content), nil
 }
 
-// disableForeignKeys disables foreign key checks on destination database
-func (c *Copier) disableForeignKeys() error {
-	_, err := c.destDB.Exec("SET session_replication_role = replica")
-	return err
-}
-
-// enableForeignKeys re-enables foreign key checks on destination database
-func (c *Copier) enableForeignKeys() error {
-	_, err := c.destDB.Exec("SET session_replication_role = default")
-	return err
-}
-
 // printStats prints final copy statistics
 func (c *Copier) printStats() {
 	duration := time.Since(c.stats.StartTime)
@@ -383,6 +384,14 @@ func (c *Copier) printStats() {
 	fmt.Printf("Tables processed: %d/%d\n", c.stats.TablesProcessed, c.stats.TotalTables)
 	fmt.Printf("Rows copied: %d\n", c.stats.RowsCopied)
 	fmt.Printf("Duration: %v\n", duration)
+
+	// Foreign key statistics
+	if c.fkManager != nil {
+		total, dropped := c.fkManager.GetForeignKeyStats()
+		if total > 0 {
+			fmt.Printf("Foreign keys: %d detected, %d temporarily dropped\n", total, dropped)
+		}
+	}
 
 	if c.stats.RowsCopied > 0 && duration.Seconds() > 0 {
 		rowsPerSecond := float64(c.stats.RowsCopied) / duration.Seconds()

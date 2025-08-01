@@ -23,9 +23,16 @@ Successfully implemented `pgcopy`, a high-performance Go CLI tool for efficientl
 - **Table Filtering**: Include/exclude specific tables or schemas
 - **Flexible Parameters**: Configurable parallel workers and batch sizes
 
-### 📋 Commands Implemented
+### � Advanced Foreign Key Management
+- **Automatic Detection**: Discovers all foreign key constraints in target tables
+- **Circular Dependency Handling**: Resolves complex FK relationships including cycles
+- **Smart Strategy Selection**: Uses replica mode when available, falls back to drop/recreate
+- **Safe Restoration**: Guarantees FK restoration even after operation failures
+- **Non-Superuser Support**: Works without special database privileges
 
-1. **`copy`** - Main data copying functionality
+### �📋 Commands Implemented
+
+1. **`copy`** - Main data copying functionality with FK management
 2. **`list`** - List tables with row counts and sizes
 3. **`version`** - Display version information
 4. **`help`** - Comprehensive help system

@@ -12,7 +12,7 @@
 - **Resume Capability**: Resume interrupted copy operations
 - **Dry Run Mode**: Preview what will be copied without actually copying data
 - **Transaction Safety**: Uses transactions to ensure data consistency
-- **Foreign Key Handling**: Temporarily disables foreign key constraints during copy
+- **Advanced Foreign Key Handling**: Automatically detects and manages foreign key constraints, including circular dependencies
 
 ## Installation
 
@@ -136,6 +136,56 @@ You can use environment variables in your connection strings:
 ```bash
 export PGPASSWORD=mypassword
 pgcopy copy --source "postgres://user@localhost:5432/sourcedb" --dest "postgres://user@localhost:5433/destdb"
+```
+
+## Foreign Key Management
+
+### Automatic Detection and Handling
+
+`pgcopy` automatically detects and handles foreign key constraints in your database, including complex scenarios with circular dependencies.
+
+### How It Works
+
+1. **Detection**: Scans all tables for foreign key constraints
+2. **Strategy Selection**: 
+   - **Preferred**: Tries to use `session_replication_role = replica` (requires superuser)
+   - **Fallback**: Drops foreign keys temporarily if replica mode unavailable
+3. **Safe Restoration**: Ensures all foreign keys are restored after copy completion
+
+### Supported Scenarios
+
+- **Simple Foreign Keys**: Standard table-to-table references
+- **Circular Dependencies**: Tables that reference each other in cycles
+- **Self-Referencing Tables**: Tables with foreign keys to themselves
+- **Complex Cascades**: Handles ON DELETE/UPDATE CASCADE, RESTRICT, SET NULL, etc.
+
+### Non-Superuser Operation
+
+When running as a non-superuser (most common scenario):
+- Foreign keys are temporarily dropped before copying each table
+- Original constraint definitions are preserved
+- All constraints are recreated after successful copy
+- Failed operations still attempt to restore dropped constraints
+
+### Error Recovery
+
+If the copy operation fails:
+- A cleanup process attempts to restore all dropped foreign keys
+- Warning messages indicate any constraints that couldn't be restored
+- Manual intervention may be required if restoration fails
+
+### Example Output
+
+```
+Detecting foreign key constraints...
+Found 15 foreign key constraints
+Cannot use replica mode (requires superuser), will drop/recreate FKs
+Copying table public.users (10000 rows)
+Dropping FK constraint fk_orders_user_id on public.orders
+Completed copying table public.users (10000 rows) in 2.1s
+...
+Restoring 15 foreign key constraints...
+Successfully restored 15/15 foreign key constraints
 ```
 
 ## Performance Considerations

@@ -65,9 +65,6 @@ Examples:
 			duration := time.Since(start)
 			log.Fatalf("Copy operation failed after %v: %v", duration, err)
 		}
-
-		duration := time.Since(start)
-		fmt.Printf("Copy operation completed successfully in %v\n", duration)
 	},
 }
 

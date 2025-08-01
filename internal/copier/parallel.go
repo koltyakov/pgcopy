@@ -71,13 +71,18 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 // copyTable copies a single table from source to destination
 func (c *Copier) copyTable(table *TableInfo) error {
 	startTime := time.Now()
-	
+
 	if table.RowCount == 0 {
 		log.Printf("Skipping empty table %s.%s", table.Schema, table.Name)
 		return nil
 	}
 
 	log.Printf("Copying table %s.%s (%d rows)", table.Schema, table.Name, table.RowCount)
+
+	// Drop foreign keys for this table if not using replica mode
+	if err := c.fkManager.DropForeignKeysForTable(table); err != nil {
+		return fmt.Errorf("failed to drop foreign keys for table: %w", err)
+	}
 
 	// Clear destination table first
 	if err := c.clearDestinationTable(table); err != nil {
@@ -86,21 +91,41 @@ func (c *Copier) copyTable(table *TableInfo) error {
 
 	// Copy data in batches
 	err := c.copyTableData(table)
-	
+
 	duration := time.Since(startTime)
 	if err != nil {
 		return err
 	}
-	
+
 	log.Printf("Completed copying table %s.%s (%d rows) in %v", table.Schema, table.Name, table.RowCount, duration)
 	return nil
 }
 
 // clearDestinationTable truncates the destination table
 func (c *Copier) clearDestinationTable(table *TableInfo) error {
-	query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
-	_, err := c.destDB.Exec(query)
-	return err
+	if c.fkManager.IsUsingReplicaMode() {
+		// Use a transaction with replica mode for the truncate
+		tx, err := c.destDB.Begin()
+		if err != nil {
+			return fmt.Errorf("failed to begin transaction for truncate: %w", err)
+		}
+		defer tx.Rollback()
+
+		if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
+			return fmt.Errorf("failed to set replica mode for truncate: %w", err)
+		}
+
+		query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
+		if _, err := tx.Exec(query); err != nil {
+			return err
+		}
+
+		return tx.Commit()
+	} else {
+		query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
+		_, err := c.destDB.Exec(query)
+		return err
+	}
 }
 
 // copyTableData copies table data in batches
@@ -192,6 +217,13 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Set replica mode for this transaction if FK manager is using it
+	if c.fkManager.IsUsingReplicaMode() {
+		if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
+			return 0, fmt.Errorf("failed to set replica mode for transaction: %w", err)
+		}
+	}
 
 	txStmt := tx.Stmt(insertStmt)
 	defer txStmt.Close()
