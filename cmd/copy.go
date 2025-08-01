@@ -45,21 +45,25 @@ Examples:
 			DryRun:        dryRun,
 		}
 
+		start := time.Now()
+
 		if err := copier.ValidateConfig(config); err != nil {
-			log.Fatalf("Configuration error: %v", err)
+			duration := time.Since(start)
+			log.Fatalf("Configuration error after %v: %v", duration, err)
 		}
 
 		fmt.Printf("Starting data copy operation...\n")
-		start := time.Now()
 
 		dataCopier, err := copier.New(config)
 		if err != nil {
-			log.Fatalf("Failed to initialize copier: %v", err)
+			duration := time.Since(start)
+			log.Fatalf("Failed to initialize copier after %v: %v", duration, err)
 		}
 		defer dataCopier.Close()
 
 		if err := dataCopier.Copy(); err != nil {
-			log.Fatalf("Copy operation failed: %v", err)
+			duration := time.Since(start)
+			log.Fatalf("Copy operation failed after %v: %v", duration, err)
 		}
 
 		duration := time.Since(start)

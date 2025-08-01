@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"time"
 )
 
 // copyTablesParallel copies tables using parallel workers
@@ -69,6 +70,8 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 
 // copyTable copies a single table from source to destination
 func (c *Copier) copyTable(table *TableInfo) error {
+	startTime := time.Now()
+	
 	if table.RowCount == 0 {
 		log.Printf("Skipping empty table %s.%s", table.Schema, table.Name)
 		return nil
@@ -82,7 +85,15 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	}
 
 	// Copy data in batches
-	return c.copyTableData(table)
+	err := c.copyTableData(table)
+	
+	duration := time.Since(startTime)
+	if err != nil {
+		return err
+	}
+	
+	log.Printf("Completed copying table %s.%s (%d rows) in %v", table.Schema, table.Name, table.RowCount, duration)
+	return nil
 }
 
 // clearDestinationTable truncates the destination table
@@ -171,7 +182,6 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 		offset += c.config.BatchSize
 	}
 
-	log.Printf("Completed copying table %s.%s (%d rows)", table.Schema, table.Name, rowsCopied)
 	return nil
 }
 
