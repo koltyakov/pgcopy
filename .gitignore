@@ -27,6 +27,29 @@ go.work.sum
 # env file
 .env
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Miscellaneous files
+*.log
+tmp/
+
+# pgcopy specific
+bin/
+dist/
+*.conf
+!examples/*.conf
+pgcopy
+pgcopy-*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
