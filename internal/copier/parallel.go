@@ -3,7 +3,6 @@ package copier
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -58,7 +57,7 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 
 	for table := range tableChan {
 		if err := c.copyTable(table); err != nil {
-			log.Printf("Error copying table %s.%s: %v", table.Schema, table.Name, err)
+			c.logf("Error copying table %s.%s: %v", table.Schema, table.Name, err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
 		} else {
 			c.mu.Lock()
@@ -73,11 +72,11 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	startTime := time.Now()
 
 	if table.RowCount == 0 {
-		log.Printf("Skipping empty table %s.%s", table.Schema, table.Name)
+		c.logf("Skipping empty table %s.%s", table.Schema, table.Name)
 		return nil
 	}
 
-	log.Printf("Copying table %s.%s (%d rows)", table.Schema, table.Name, table.RowCount)
+	c.logf("Copying table %s.%s (%d rows)", table.Schema, table.Name, table.RowCount)
 
 	// Drop foreign keys for this table if not using replica mode
 	if err := c.fkManager.DropForeignKeysForTable(table); err != nil {
@@ -98,11 +97,11 @@ func (c *Copier) copyTable(table *TableInfo) error {
 
 	// Restore foreign keys for this table immediately after copying
 	if restoreErr := c.fkManager.RestoreForeignKeysForTable(table); restoreErr != nil {
-		log.Printf("Warning: failed to restore foreign keys for table %s.%s: %v", table.Schema, table.Name, restoreErr)
+		c.logf("Warning: failed to restore foreign keys for table %s.%s: %v", table.Schema, table.Name, restoreErr)
 	}
 
 	duration := time.Since(startTime)
-	log.Printf("Completed copying table %s.%s (%d rows) in %v", table.Schema, table.Name, table.RowCount, duration)
+	c.logf("Completed copying table %s.%s (%d rows) in %v", table.Schema, table.Name, table.RowCount, duration)
 	return nil
 }
 

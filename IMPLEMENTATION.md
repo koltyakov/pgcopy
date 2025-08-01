@@ -16,6 +16,7 @@ Successfully implemented `pgcopy`, a high-performance Go CLI tool for efficientl
 ### 📊 Monitoring & Progress
 
 - **Real-time Progress**: Periodic progress updates during long-running operations
+- **Visual Progress Bar**: Optional schollz/progressbar integration with sticky top position and scrolling log messages below
 - **Statistics Tracking**: Comprehensive copy statistics with performance metrics
 - **Dry Run Mode**: Preview operations without actual data copying
 
@@ -156,6 +157,15 @@ pgcopy copy \
   --dry-run
 ```
 
+### Progress Bar Mode
+
+```bash
+pgcopy copy \
+  --source "postgres://user:pass@source:5432/db" \
+  --dest "postgres://user:pass@dest:5432/db" \
+  --progress
+```
+
 ## Quality Assurance
 
 ### Testing
@@ -183,6 +193,7 @@ pgcopy copy \
 - **github.com/lib/pq**: PostgreSQL driver
 - **github.com/spf13/cobra**: CLI framework
 - **github.com/spf13/viper**: Configuration management
+- **github.com/schollz/progressbar/v3**: Visual progress bar for enhanced user experience
 
 ### Development Tools
 

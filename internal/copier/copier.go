@@ -10,7 +10,25 @@ import (
 	"time"
 
 	_ "github.com/lib/pq"
+	"github.com/schollz/progressbar/v3"
 )
+
+// progressBarWriter is a custom writer that ensures log messages
+// appear below the progress bar without interfering with it
+type progressBarWriter struct {
+	progressBar *progressbar.ProgressBar
+}
+
+func (w *progressBarWriter) Write(p []byte) (n int, err error) {
+	if w.progressBar != nil {
+		// Clear the progress bar temporarily, write the message, then redraw
+		fmt.Fprint(os.Stderr, "\r\033[K") // Clear current line
+		n, err = os.Stderr.Write(p)
+		// The progress bar will redraw itself on the next update
+		return n, err
+	}
+	return os.Stderr.Write(p)
+}
 
 // Config holds the configuration for the data copy operation
 type Config struct {
@@ -24,17 +42,20 @@ type Config struct {
 	IncludeTables []string
 	Resume        bool
 	DryRun        bool
+	ProgressBar   bool
 }
 
 // Copier handles the data copying operation
 type Copier struct {
-	config     *Config
-	sourceDB   *sql.DB
-	destDB     *sql.DB
-	fkManager  *ForeignKeyManager
-	mu         sync.Mutex
-	stats      *CopyStats
-	lastUpdate time.Time
+	config      *Config
+	sourceDB    *sql.DB
+	destDB      *sql.DB
+	fkManager   *ForeignKeyManager
+	mu          sync.Mutex
+	stats       *CopyStats
+	lastUpdate  time.Time
+	progressBar *progressbar.ProgressBar
+	logger      *log.Logger
 }
 
 // CopyStats tracks copying statistics
@@ -149,7 +170,7 @@ func (c *Copier) Copy() error {
 	// Calculate total rows for progress tracking
 	totalRows, err := c.calculateTotalRows(tables)
 	if err != nil {
-		log.Printf("Warning: failed to calculate total rows: %v", err)
+		c.logf("Warning: failed to calculate total rows: %v", err)
 		totalRows = 0
 	}
 	c.stats.TotalRows = totalRows
@@ -160,9 +181,35 @@ func (c *Copier) Copy() error {
 
 	// Initialize progress tracking
 	c.lastUpdate = time.Now()
-	if totalRows > 0 {
+	if c.config.ProgressBar && totalRows > 0 {
+		// Create a custom progress bar that stays at the top with modern styling
+		c.progressBar = progressbar.NewOptions64(totalRows,
+			progressbar.OptionSetDescription("Copying rows"),
+			progressbar.OptionSetWriter(os.Stderr),
+			progressbar.OptionShowCount(),
+			progressbar.OptionShowIts(),
+			progressbar.OptionSetPredictTime(true),
+			progressbar.OptionFullWidth(),
+			progressbar.OptionEnableColorCodes(true),
+			progressbar.OptionSetTheme(progressbar.Theme{
+				Saucer:        "█",
+				SaucerHead:    "█",
+				SaucerPadding: "░",
+				BarStart:      "▐",
+				BarEnd:        "▌",
+			}),
+		)
+
+		// Initialize custom logger that works with progress bar
+		writer := &progressBarWriter{progressBar: c.progressBar}
+		c.logger = log.New(writer, "", log.LstdFlags)
+
+		// Set the global logger to use our custom writer when progress bar is active
+		log.SetOutput(writer)
+	} else if totalRows > 0 {
 		fmt.Printf("Starting copy of %d tables (%d rows) with %d workers\n",
 			len(tables), totalRows, c.config.Parallel)
+		c.logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
 	// Detect and handle foreign keys
@@ -184,12 +231,20 @@ func (c *Copier) Copy() error {
 
 	// Try to recover any remaining FKs from backup file before cleanup
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
-		log.Printf("Warning: failed to recover FKs from backup file: %v", recoveryErr)
+		c.logf("Warning: failed to recover FKs from backup file: %v", recoveryErr)
 	}
 
 	// Clean up backup file on successful completion
 	if cleanupErr := c.fkManager.CleanupBackupFile(); cleanupErr != nil {
-		log.Printf("Warning: failed to cleanup FK backup file: %v", cleanupErr)
+		c.logf("Warning: failed to cleanup FK backup file: %v", cleanupErr)
+	}
+
+	// Finish progress bar if enabled
+	if c.config.ProgressBar && c.progressBar != nil {
+		c.progressBar.Finish()
+		fmt.Println() // Add a newline after progress bar
+		// Restore the original logger output
+		log.SetOutput(os.Stderr)
 	}
 
 	// Print final statistics
@@ -238,7 +293,7 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 
 		// Get column information
 		if err := c.getTableColumns(tableInfo); err != nil {
-			log.Printf("Warning: failed to get columns for %s.%s: %v", schema, name, err)
+			c.logf("Warning: failed to get columns for %s.%s: %v", schema, name, err)
 			continue
 		}
 
@@ -409,18 +464,33 @@ func (c *Copier) printStats() {
 	}
 }
 
+// logf logs a message using the custom logger when progress bar is active,
+// or the standard logger otherwise
+func (c *Copier) logf(format string, args ...interface{}) {
+	if c.logger != nil {
+		c.logger.Printf(format, args...)
+	} else {
+		log.Printf(format, args...)
+	}
+}
+
 // updateProgress prints progress updates periodically
-func (c *Copier) updateProgress(_ int64) {
+func (c *Copier) updateProgress(rowsAdded int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
-	if now.Sub(c.lastUpdate) > 5*time.Second { // Update every 5 seconds
-		c.lastUpdate = now
-		percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
-		if c.stats.TotalRows > 0 {
-			fmt.Printf("Progress: %d/%d rows (%.1f%%) - %d tables processed\n",
-				c.stats.RowsCopied, c.stats.TotalRows, percentage, c.stats.TablesProcessed)
+	if c.config.ProgressBar && c.progressBar != nil {
+		// Update progress bar by the number of rows added
+		c.progressBar.Add64(rowsAdded)
+	} else {
+		now := time.Now()
+		if now.Sub(c.lastUpdate) > 5*time.Second { // Update every 5 seconds
+			c.lastUpdate = now
+			percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
+			if c.stats.TotalRows > 0 {
+				fmt.Printf("Progress: %d/%d rows (%.1f%%) - %d tables processed\n",
+					c.stats.RowsCopied, c.stats.TotalRows, percentage, c.stats.TablesProcessed)
+			}
 		}
 	}
 }
