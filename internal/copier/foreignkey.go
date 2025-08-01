@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // ForeignKey represents a foreign key constraint
@@ -24,18 +26,23 @@ type ForeignKey struct {
 
 // ForeignKeyManager handles foreign key operations
 type ForeignKeyManager struct {
-	db          *sql.DB
-	foreignKeys []ForeignKey
-	droppedKeys []ForeignKey
-	useReplica  bool
+	db                   *sql.DB
+	foreignKeys          []ForeignKey
+	droppedKeys          []ForeignKey
+	useReplica           bool
+	backupFile           string
+	mu                   sync.RWMutex    // Protects all shared state operations
+	processedConstraints map[string]bool // Track processed constraints to avoid duplicates
 }
 
 // NewForeignKeyManager creates a new foreign key manager
 func NewForeignKeyManager(db *sql.DB) *ForeignKeyManager {
 	return &ForeignKeyManager{
-		db:          db,
-		foreignKeys: make([]ForeignKey, 0),
-		droppedKeys: make([]ForeignKey, 0),
+		db:                   db,
+		foreignKeys:          make([]ForeignKey, 0),
+		droppedKeys:          make([]ForeignKey, 0),
+		backupFile:           ".fk_backup.sql",
+		processedConstraints: make(map[string]bool),
 	}
 }
 
@@ -159,6 +166,7 @@ func (fkm *ForeignKeyManager) TryUseReplicaMode() error {
 	_, err := fkm.db.Exec("SET session_replication_role = replica")
 	if err != nil {
 		log.Printf("Cannot use replica mode (requires superuser), will drop/recreate FKs: %v", err)
+		log.Printf("FK definitions will be backed up to: %s", fkm.backupFile)
 		fkm.useReplica = false
 		return nil
 	}
@@ -225,8 +233,105 @@ func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 	return nil
 }
 
+// RestoreForeignKeysForTable restores foreign keys related to a specific table
+func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error {
+	if fkm.useReplica {
+		// No need to restore in replica mode
+		return nil
+	}
+
+	fkm.mu.RLock()
+	if len(fkm.droppedKeys) == 0 {
+		fkm.mu.RUnlock()
+		return nil
+	}
+
+	tableFullName := fmt.Sprintf("%s.%s", table.Schema, table.Name)
+	var toRestore []ForeignKey
+	var remaining []ForeignKey
+
+	// Find FKs related to this table
+	for _, fk := range fkm.droppedKeys {
+		fkTableName := fmt.Sprintf("%s.%s", fk.Schema, fk.Table)
+		refTableName := fmt.Sprintf("%s.%s", fk.ReferencedSchema, fk.ReferencedTable)
+
+		if fkTableName == tableFullName || refTableName == tableFullName {
+			toRestore = append(toRestore, fk)
+		} else {
+			remaining = append(remaining, fk)
+		}
+	}
+	fkm.mu.RUnlock()
+
+	if len(toRestore) == 0 {
+		return nil
+	}
+
+	log.Printf("Restoring %d foreign key constraint(s) for table %s.%s", len(toRestore), table.Schema, table.Name)
+
+	// Sort by dependency order
+	sortedKeys := fkm.sortKeysByDependency(toRestore)
+	restored := 0
+
+	for _, fk := range sortedKeys {
+		constraintKey := fmt.Sprintf("%s.%s.%s", fk.Schema, fk.Table, fk.ConstraintName)
+
+		fkm.mu.RLock()
+		wasProcessed := fkm.processedConstraints[constraintKey]
+		fkm.mu.RUnlock()
+
+		// Skip if already restored
+		if !wasProcessed {
+			log.Printf("Warning: FK %s on %s.%s was not in dropped list", fk.ConstraintName, fk.Schema, fk.Table)
+			continue
+		}
+
+		log.Printf("Restoring FK constraint %s on %s.%s", fk.ConstraintName, fk.Schema, fk.Table)
+
+		_, err := fkm.db.Exec(fk.Definition)
+		if err != nil {
+			log.Printf("Warning: failed to restore FK %s on %s.%s: %v", fk.ConstraintName, fk.Schema, fk.Table, err)
+			// Keep it in the dropped list for later retry
+			remaining = append(remaining, fk)
+		} else {
+			restored++
+			// Mark as restored (remove from processed constraints)
+			fkm.mu.Lock()
+			delete(fkm.processedConstraints, constraintKey)
+			fkm.mu.Unlock()
+		}
+	}
+
+	// Update the dropped keys list
+	fkm.mu.Lock()
+	fkm.droppedKeys = remaining
+	fkm.mu.Unlock()
+
+	// Update backup file snapshot
+	if backupErr := fkm.writeBackupSnapshot(); backupErr != nil {
+		log.Printf("Warning: failed to update FK backup file: %v", backupErr)
+	}
+
+	if restored > 0 {
+		log.Printf("Successfully restored %d/%d foreign key constraints for table %s.%s",
+			restored, len(toRestore), table.Schema, table.Name)
+	}
+
+	return nil
+}
+
 // dropForeignKey drops a specific foreign key constraint
 func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
+	fkm.mu.Lock()
+	defer fkm.mu.Unlock()
+
+	constraintKey := fmt.Sprintf("%s.%s.%s", fk.Schema, fk.Table, fk.ConstraintName)
+
+	// Check if already processed
+	if fkm.processedConstraints[constraintKey] {
+		return nil // Already processed
+	}
+
 	// Check if already dropped
 	for _, dropped := range fkm.droppedKeys {
 		if dropped.ConstraintName == fk.ConstraintName &&
@@ -240,56 +345,54 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 		fk.Schema, fk.Table, fk.ConstraintName)
 
 	log.Printf("Dropping FK constraint %s on %s.%s", fk.ConstraintName, fk.Schema, fk.Table)
+
+	// Release lock temporarily for database operation
+	fkm.mu.Unlock()
 	_, err := fkm.db.Exec(query)
+	fkm.mu.Lock()
+
 	if err != nil {
 		return err
 	}
 
+	// Mark as processed and add to dropped list
+	fkm.processedConstraints[constraintKey] = true
 	fkm.droppedKeys = append(fkm.droppedKeys, *fk)
+
+	// Clean up duplicates in droppedKeys
+	fkm.deduplicateDroppedKeysUnsafe()
+
+	// Update backup file snapshot (will acquire its own lock)
+	fkm.mu.Unlock()
+	backupErr := fkm.writeBackupSnapshot()
+	fkm.mu.Lock()
+	if backupErr != nil {
+		log.Printf("Warning: failed to update FK backup file: %v", backupErr)
+	}
+
 	return nil
 }
 
-// RestoreAllForeignKeys restores all dropped foreign keys
-func (fkm *ForeignKeyManager) RestoreAllForeignKeys() error {
-	if fkm.useReplica {
-		// Just disable replica mode
-		return fkm.DisableReplicaMode()
+// deduplicateDroppedKeys removes duplicate entries from droppedKeys slice
+func (fkm *ForeignKeyManager) deduplicateDroppedKeys() {
+	fkm.mu.Lock()
+	defer fkm.mu.Unlock()
+	fkm.deduplicateDroppedKeysUnsafe()
+}
+
+// deduplicateDroppedKeysUnsafe removes duplicate entries from droppedKeys slice (must hold mu.Lock)
+func (fkm *ForeignKeyManager) deduplicateDroppedKeysUnsafe() {
+	uniqueFKs := make(map[string]ForeignKey)
+	for _, fk := range fkm.droppedKeys {
+		constraintKey := fmt.Sprintf("%s.%s.%s", fk.Schema, fk.Table, fk.ConstraintName)
+		uniqueFKs[constraintKey] = fk
 	}
 
-	if len(fkm.droppedKeys) == 0 {
-		log.Printf("No foreign keys to restore")
-		return nil
+	// Rebuild the slice with unique entries
+	fkm.droppedKeys = make([]ForeignKey, 0, len(uniqueFKs))
+	for _, fk := range uniqueFKs {
+		fkm.droppedKeys = append(fkm.droppedKeys, fk)
 	}
-
-	log.Printf("Restoring %d foreign key constraints...", len(fkm.droppedKeys))
-
-	// Sort by dependency order to avoid restoration issues
-	sortedKeys := fkm.sortKeysByDependency(fkm.droppedKeys)
-
-	var errors []error
-	restored := 0
-
-	for _, fk := range sortedKeys {
-		log.Printf("Restoring FK constraint %s on %s.%s", fk.ConstraintName, fk.Schema, fk.Table)
-
-		_, err := fkm.db.Exec(fk.Definition)
-		if err != nil {
-			errMsg := fmt.Errorf("failed to restore FK %s on %s.%s: %w",
-				fk.ConstraintName, fk.Schema, fk.Table, err)
-			errors = append(errors, errMsg)
-			log.Printf("Warning: %v", errMsg)
-		} else {
-			restored++
-		}
-	}
-
-	log.Printf("Successfully restored %d/%d foreign key constraints", restored, len(fkm.droppedKeys))
-
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to restore %d foreign keys: %v", len(errors), errors[0])
-	}
-
-	return nil
 }
 
 // sortKeysByDependency sorts foreign keys to minimize restoration conflicts
@@ -321,10 +424,135 @@ func (fkm *ForeignKeyManager) sortKeysByDependency(keys []ForeignKey) []ForeignK
 
 // GetForeignKeyStats returns statistics about foreign keys
 func (fkm *ForeignKeyManager) GetForeignKeyStats() (total, dropped int) {
+	fkm.mu.RLock()
+	defer fkm.mu.RUnlock()
 	return len(fkm.foreignKeys), len(fkm.droppedKeys)
 }
 
 // IsUsingReplicaMode returns whether replica mode is enabled
 func (fkm *ForeignKeyManager) IsUsingReplicaMode() bool {
 	return fkm.useReplica
+}
+
+// writeBackupSnapshot writes a complete snapshot of unrestored FKs to the backup file
+func (fkm *ForeignKeyManager) writeBackupSnapshot() error {
+	fkm.mu.Lock()
+	defer fkm.mu.Unlock()
+
+	if len(fkm.droppedKeys) == 0 {
+		// No FKs to backup, remove backup file if it exists
+		if _, err := os.Stat(fkm.backupFile); err == nil {
+			return os.Remove(fkm.backupFile)
+		}
+		return nil
+	}
+
+	// Deduplicate droppedKeys using a map
+	uniqueFKs := make(map[string]ForeignKey)
+	for _, fk := range fkm.droppedKeys {
+		constraintKey := fmt.Sprintf("%s.%s.%s", fk.Schema, fk.Table, fk.ConstraintName)
+		uniqueFKs[constraintKey] = fk
+	}
+
+	// Convert back to slice for sorting
+	var deduplicatedFKs []ForeignKey
+	for _, fk := range uniqueFKs {
+		deduplicatedFKs = append(deduplicatedFKs, fk)
+	}
+
+	// Sort for consistent output
+	sort.Slice(deduplicatedFKs, func(i, j int) bool {
+		iKey := fmt.Sprintf("%s.%s.%s", deduplicatedFKs[i].Schema, deduplicatedFKs[i].Table, deduplicatedFKs[i].ConstraintName)
+		jKey := fmt.Sprintf("%s.%s.%s", deduplicatedFKs[j].Schema, deduplicatedFKs[j].Table, deduplicatedFKs[j].ConstraintName)
+		return iKey < jKey
+	})
+
+	// Create backup file content
+	var content strings.Builder
+	content.WriteString("-- Foreign Key Backup File\n")
+	content.WriteString("-- Generated by pgcopy - contains unrestored FK constraints\n")
+	content.WriteString("-- Execute this file manually if pgcopy process was interrupted\n\n")
+
+	for _, fk := range deduplicatedFKs {
+		content.WriteString(fmt.Sprintf("-- FK: %s.%s.%s\n", fk.Schema, fk.Table, fk.ConstraintName))
+		content.WriteString(fmt.Sprintf("%s;\n\n", fk.Definition))
+	}
+
+	// Remove trailing empty line
+	contentStr := strings.TrimSuffix(content.String(), "\n")
+
+	return os.WriteFile(fkm.backupFile, []byte(contentStr), 0644)
+}
+
+// CleanupBackupFile removes the backup file on successful completion
+func (fkm *ForeignKeyManager) CleanupBackupFile() error {
+	fkm.mu.Lock()
+	defer fkm.mu.Unlock()
+
+	if _, err := os.Stat(fkm.backupFile); os.IsNotExist(err) {
+		return nil // File doesn't exist
+	}
+
+	log.Printf("All foreign keys restored successfully, cleaning up backup file: %s", fkm.backupFile)
+	return os.Remove(fkm.backupFile)
+}
+
+// RecoverFromBackupFile attempts to restore FKs from backup file if they exist but weren't tracked
+func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
+	if fkm.useReplica {
+		return nil
+	}
+
+	// Check if backup file exists
+	if _, err := os.Stat(fkm.backupFile); os.IsNotExist(err) {
+		return nil // No backup file to recover from
+	}
+
+	log.Printf("Found FK backup file, attempting to recover any untracked foreign keys...")
+
+	// Try to execute the backup file to restore any remaining FKs
+	content, err := os.ReadFile(fkm.backupFile)
+	if err != nil {
+		return fmt.Errorf("failed to read backup file: %w", err)
+	}
+
+	contentStr := string(content)
+	if len(contentStr) == 0 {
+		return nil
+	}
+
+	// Split into individual FK statements and execute them
+	lines := strings.Split(contentStr, "\n")
+	restored := 0
+	var errors []error
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ALTER TABLE") && strings.HasSuffix(line, ";") {
+			// Remove trailing semicolon
+			statement := strings.TrimSuffix(line, ";")
+
+			_, err := fkm.db.Exec(statement)
+			if err != nil {
+				// Ignore "already exists" errors, but log others
+				if !strings.Contains(err.Error(), "already exists") {
+					errors = append(errors, fmt.Errorf("failed to restore FK from backup: %w", err))
+					log.Printf("Warning: failed to restore FK from backup: %v", err)
+				}
+			} else {
+				restored++
+				log.Printf("Successfully restored FK from backup file")
+			}
+		}
+	}
+
+	if restored > 0 {
+		log.Printf("Recovered %d foreign key constraints from backup file", restored)
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("encountered %d errors during backup recovery", len(errors))
+	}
+
+	return nil
 }

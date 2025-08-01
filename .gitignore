@@ -30,6 +30,7 @@ go.work.sum
 # Miscellaneous files
 *.log
 tmp/
+.fk_backup.sql
 
 # pgcopy specific
 bin/

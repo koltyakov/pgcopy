@@ -135,7 +135,9 @@ You can use environment variables in your connection strings:
 
 ```bash
 export PGPASSWORD=mypassword
-pgcopy copy --source "postgres://user@localhost:5432/sourcedb" --dest "postgres://user@localhost:5433/destdb"
+pgcopy copy \
+  --source "postgres://user@localhost:5432/sourcedb" \
+  --dest "postgres://user@localhost:5433/destdb"
 ```
 
 ## Foreign Key Management

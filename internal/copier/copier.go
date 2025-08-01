@@ -175,18 +175,21 @@ func (c *Copier) Copy() error {
 		return fmt.Errorf("failed to setup foreign key handling: %w", err)
 	}
 
-	// Ensure foreign keys are restored even if copy fails
-	defer func() {
-		if restoreErr := c.fkManager.RestoreAllForeignKeys(); restoreErr != nil {
-			log.Printf("Critical: failed to restore foreign keys: %v", restoreErr)
-		}
-	}()
-
 	// Copy tables in parallel
 	err = c.copyTablesParallel(tables)
 
 	if err != nil {
 		return err
+	}
+
+	// Try to recover any remaining FKs from backup file before cleanup
+	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
+		log.Printf("Warning: failed to recover FKs from backup file: %v", recoveryErr)
+	}
+
+	// Clean up backup file on successful completion
+	if cleanupErr := c.fkManager.CleanupBackupFile(); cleanupErr != nil {
+		log.Printf("Warning: failed to cleanup FK backup file: %v", cleanupErr)
 	}
 
 	// Print final statistics
@@ -407,7 +410,7 @@ func (c *Copier) printStats() {
 }
 
 // updateProgress prints progress updates periodically
-func (c *Copier) updateProgress(rowsAdded int64) {
+func (c *Copier) updateProgress(_ int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

@@ -92,11 +92,16 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	// Copy data in batches
 	err := c.copyTableData(table)
 
-	duration := time.Since(startTime)
 	if err != nil {
 		return err
 	}
 
+	// Restore foreign keys for this table immediately after copying
+	if restoreErr := c.fkManager.RestoreForeignKeysForTable(table); restoreErr != nil {
+		log.Printf("Warning: failed to restore foreign keys for table %s.%s: %v", table.Schema, table.Name, restoreErr)
+	}
+
+	duration := time.Since(startTime)
 	log.Printf("Completed copying table %s.%s (%d rows) in %v", table.Schema, table.Name, table.RowCount, duration)
 	return nil
 }
