@@ -13,6 +13,25 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
+// formatDuration formats a duration without decimal parts
+func formatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		minutes := int(d.Minutes())
+		seconds := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm%ds", minutes, seconds)
+	}
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	seconds := int(d.Seconds()) % 60
+	return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
+}
+
 // progressBarWriter is a custom writer that ensures log messages
 // appear below the progress bar without interfering with it
 type progressBarWriter struct {
@@ -184,7 +203,7 @@ func (c *Copier) Copy() error {
 	if c.config.ProgressBar && totalRows > 0 {
 		// Create a custom progress bar that stays at the top with modern styling
 		c.progressBar = progressbar.NewOptions64(totalRows,
-			progressbar.OptionSetDescription("Copying rows"),
+			progressbar.OptionSetDescription(fmt.Sprintf("Copying %d tables", len(tables))),
 			progressbar.OptionSetWriter(os.Stderr),
 			progressbar.OptionShowCount(),
 			progressbar.OptionShowIts(),
@@ -441,7 +460,7 @@ func (c *Copier) printStats() {
 	fmt.Printf("\n=== Copy Statistics ===\n")
 	fmt.Printf("Tables processed: %d/%d\n", c.stats.TablesProcessed, c.stats.TotalTables)
 	fmt.Printf("Rows copied: %d\n", c.stats.RowsCopied)
-	fmt.Printf("Duration: %v\n", duration)
+	fmt.Printf("Duration: %s\n", formatDuration(duration))
 
 	// Foreign key statistics
 	if c.fkManager != nil {
@@ -480,6 +499,11 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 	defer c.mu.Unlock()
 
 	if c.config.ProgressBar && c.progressBar != nil {
+		// Update progress bar description with remaining tables
+		description := fmt.Sprintf("Copying rows (%d/%d tables)",
+			c.stats.TablesProcessed, c.stats.TotalTables)
+		c.progressBar.Describe(description)
+
 		// Update progress bar by the number of rows added
 		c.progressBar.Add64(rowsAdded)
 	} else {

@@ -62,6 +62,12 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 		} else {
 			c.mu.Lock()
 			c.stats.TablesProcessed++
+			// Update progress bar description when a table is completed
+			if c.config.ProgressBar && c.progressBar != nil {
+				description := fmt.Sprintf("Copying rows (%d/%d tables)",
+					c.stats.TablesProcessed, c.stats.TotalTables)
+				c.progressBar.Describe(description)
+			}
 			c.mu.Unlock()
 		}
 	}
@@ -101,7 +107,7 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	}
 
 	duration := time.Since(startTime)
-	c.logf("Completed copying table %s.%s (%d rows) in %v", table.Schema, table.Name, table.RowCount, duration)
+	c.logf("Completed copying table %s.%s (%d rows) in %s", table.Schema, table.Name, table.RowCount, formatDuration(duration))
 	return nil
 }
 
