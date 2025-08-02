@@ -19,31 +19,31 @@
 
 ### What pgcopy is NOT
 
-- **Not for online replication**: This is not a real-time replication solution
-- **Not Change Data Capture (CDC)**: It doesn't track or sync incremental changes
-- **Not for production replication**: Use PostgreSQL's built-in logical/physical replication for production
-- **Not a schema migration tool**: Both source and destination databases must have identical schemas
+- Not for online replication: This is not a real-time replication solution
+- Not Change Data Capture (CDC): It doesn't track or sync incremental changes
+- Not for production replication: Use PostgreSQL's built-in logical/physical replication for production
+- Not a schema migration tool: Both source and destination databases must have identical schemas
 
 ### Why Choose pgcopy Over Alternatives
 
 #### vs. pg_dump/pg_restore
 
-- **Performance**: Parallel processing often outperforms serial dump/restore operations
-- **Foreign Key Handling**: Automatically manages complex FK constraints without manual intervention
-- **Flexibility**: Table-level filtering and resume capabilities
-- **Progress Tracking**: Real-time progress monitoring with detailed logging
+- Performance: Parallel processing often outperforms serial dump/restore operations
+- Foreign Key Handling: Automatically manages complex FK constraints without manual intervention
+- Flexibility: Table-level filtering and resume capabilities
+- Progress Tracking: Real-time progress monitoring with detailed logging
 
 #### vs. ETL Tools
 
-- **Simplicity**: No complex configuration or learning curve
-- **PostgreSQL-Optimized**: Built specifically for PostgreSQL-to-PostgreSQL transfers
-- **Constraint-Aware**: Understands and preserves PostgreSQL foreign key relationships
+- Simplicity: No complex configuration or learning curve
+- PostgreSQL-Optimized: Built specifically for PostgreSQL-to-PostgreSQL transfers
+- Constraint-Aware: Understands and preserves PostgreSQL foreign key relationships
 
 #### vs. Manual SQL Scripts
 
-- **Automated FK Management**: No need to manually drop/recreate constraints
-- **Error Recovery**: Built-in error handling and constraint restoration
-- **Parallel Execution**: Concurrent table processing for better performance
+- Automated FK Management: No need to manually drop/recreate constraints
+- Error Recovery: Built-in error handling and constraint restoration
+- Parallel Execution: Concurrent table processing for better performance
 
 ### Ideal Scenarios
 
@@ -74,15 +74,15 @@
 
 ## Features
 
-- **High Performance**: Parallel table copying with configurable workers
-- **Batch Processing**: Configurable batch sizes for optimal memory usage
-- **Progress Tracking**: Real-time progress monitoring with visual progress bar enabled by default (stays fixed at top while logs scroll below)
-- **Flexible Configuration**: Support for connection strings, config files, and command-line options
-- **Table Filtering**: Include/exclude specific tables from the copy operation
-- **Resume Capability**: Resume interrupted copy operations
-- **Dry Run Mode**: Preview what will be copied without actually copying data
-- **Transaction Safety**: Uses transactions to ensure data consistency
-- **Advanced Foreign Key Handling**: Automatically detects and manages foreign key constraints, including circular dependencies
+- High Performance: Parallel table copying with configurable workers
+- Batch Processing: Configurable batch sizes for optimal memory usage
+- Progress Tracking: Real-time progress monitoring with visual progress bar enabled by default (stays fixed at top while logs scroll below)
+- Flexible Configuration: Support for connection strings, config files, and command-line options
+- Table Filtering: Include/exclude specific tables from the copy operation
+- Resume Capability: Resume interrupted copy operations
+- Dry Run Mode: Preview what will be copied without actually copying data
+- Transaction Safety: Uses transactions to ensure data consistency
+- Advanced Foreign Key Handling: Automatically detects and manages foreign key constraints, including circular dependencies
 
 ## Installation
 
@@ -265,19 +265,19 @@ pgcopy copy \
 
 One of **pgcopy's** key advantages is its ability to handle complex foreign key constraints **without requiring superuser privileges**. This addresses a common pain point where:
 
-- **Cloud databases** often don't provide superuser access (AWS RDS, Google Cloud SQL, Azure Database)
-- **Managed environments** restrict administrative privileges
-- **pg_dump/pg_restore fails** with permission errors on constraint operations
-- **Manual FK management** becomes error-prone with circular dependencies
+- Cloud databases often don't provide superuser access (AWS RDS, Google Cloud SQL, Azure Database)
+- Managed environments restrict administrative privileges
+- pg_dump/pg_restore fails with permission errors on constraint operations
+- Manual FK management becomes error-prone with circular dependencies
 
 ### The Foreign Key Challenge
 
 When copying data between PostgreSQL databases with foreign key constraints, you typically face these issues:
 
-1. **Constraint Violations**: Inserting data in wrong order causes FK violations
-2. **Circular Dependencies**: Tables that reference each other create chicken-and-egg problems
-3. **Permission Requirements**: Standard solutions often require superuser access
-4. **Manual Complexity**: Hand-managing constraints is tedious and error-prone
+1. Constraint Violations: Inserting data in wrong order causes FK violations
+2. Circular Dependencies: Tables that reference each other create chicken-and-egg problems
+3. Permission Requirements: Standard solutions often require superuser access
+4. Manual Complexity: Hand-managing constraints is tedious and error-prone
 
 ### pgcopy's Solution
 
@@ -299,18 +299,18 @@ When copying data between PostgreSQL databases with foreign key constraints, you
 
 ### How It Works
 
-1. **Detection**: Scans all tables for foreign key constraints
-2. **Strategy Selection**: 
-   - **Preferred**: Tries to use `session_replication_role = replica` (requires superuser)
-   - **Fallback**: Drops foreign keys temporarily if replica mode unavailable
-3. **Safe Restoration**: Ensures all foreign keys are restored after copy completion
+1. Detection: Scans all tables for foreign key constraints
+2. Strategy Selection: 
+   - Preferred: Tries to use `session_replication_role = replica` (requires superuser)
+   - Fallback: Drops foreign keys temporarily if replica mode unavailable
+3. Safe Restoration: Ensures all foreign keys are restored after copy completion
 
 ### Supported Scenarios
 
-- **Simple Foreign Keys**: Standard table-to-table references
-- **Circular Dependencies**: Tables that reference each other in cycles
-- **Self-Referencing Tables**: Tables with foreign keys to themselves
-- **Complex Cascades**: Handles ON DELETE/UPDATE CASCADE, RESTRICT, SET NULL, etc.
+- Simple Foreign Keys: Standard table-to-table references
+- Circular Dependencies: Tables that reference each other in cycles
+- Self-Referencing Tables: Tables with foreign keys to themselves
+- Complex Cascades: Handles ON DELETE/UPDATE CASCADE, RESTRICT, SET NULL, etc.
 
 ### Non-Superuser Operation
 
@@ -337,33 +337,25 @@ pgcopy copy \
 ```
 
 **Output:**
-```
-Detecting foreign key constraints...
-Found 23 foreign key constraints across 15 tables
-Cannot use replica mode (requires superuser), will drop/recreate FKs
-Copying table public.users (50000 rows)
-Temporarily dropping FK: fk_orders_user_id, fk_profiles_user_id
-Completed copying public.users (50000 rows) in 3.2s
-Copying table public.orders (125000 rows)  
-Temporarily dropping FK: fk_order_items_order_id
-Completed copying public.orders (125000 rows) in 8.1s
-...
-Restoring 23 foreign key constraints...
-Successfully restored 23/23 foreign key constraints
-```
-
-### Example Output
 
 ```
-Detecting foreign key constraints...
-Found 15 foreign key constraints
-Cannot use replica mode (requires superuser), will drop/recreate FKs
-Copying table public.users (10000 rows)
-Dropping FK constraint fk_orders_user_id on public.orders
-Completed copying table public.users (10000 rows) in 2.1s
+Starting data copy operation...
+20:53:26 INFO Detecting foreign key constraints...
+20:53:26 DONE Found 5 foreign key constraints
+20:53:26 DONE Using replica mode for foreign key handling
+20:53:26 INFO Copying table public.ContainerHistory (84.8K rows)
 ...
-Restoring 15 foreign key constraints...
-Successfully restored 15/15 foreign key constraints
+20:53:46 DONE Completed copying public.ContainerHistory (84.8K rows) in 20s
+20:53:48 DONE Completed copying public.ContainerBarcodes (112.9K rows) in 22s
+
+╔══════════════════════════════════════════════════════════════╗
+║                        📊 COPY STATISTICS                    ║
+╠══════════════════════════════════════════════════════════════╣
+║  📋 Tables Processed:                                     9  ║
+║  📊 Rows Copied:                                     439025  ║
+║  ⏱️  Duration:                                          22s  ║
+║  🚀 Average Speed:                             19322 rows/s  ║
+╚══════════════════════════════════════════════════════════════╝
 ```
 
 ## Performance Considerations
@@ -376,24 +368,23 @@ Successfully restored 15/15 foreign key constraints
 
 | Scenario | pg_dump/pg_restore | pgcopy | Advantage |
 |----------|-------------------|--------|-----------|
-| **Large tables (>1M rows)** | Serial processing | Parallel batching | 3-5x faster |
-| **Many small tables** | Overhead per table | Parallel workers | 2-4x faster |
-| **Complex FK constraints** | Manual intervention | Automatic handling | Much easier |
-| **Cloud/managed databases** | Permission issues | Works without superuser | Actually works |
-| **Selective table sync** | All-or-nothing | Table filtering | More flexible |
+| Large tables (>1M rows) | Serial processing | Parallel batching | 3-5x faster |
+| Many small tables | Overhead per table | Parallel workers | 2-4x faster |
+| Complex FK constraints | Manual intervention | Automatic handling | Much easier |
+| Cloud/managed databases | Permission issues | Works without superuser | Actually works |
 
 #### Performance Characteristics
 
-- **Parallel Processing**: Multiple tables copied simultaneously
-- **Batch Optimization**: Configurable batch sizes for memory efficiency  
-- **Connection Pooling**: Optimized database connections
-- **Progress Tracking**: Real-time feedback without performance impact
+- Parallel Processing: Multiple tables copied simultaneously
+- Batch Optimization: Configurable batch sizes for memory efficiency  
+- Connection Pooling: Optimized database connections
+- Progress Tracking: Real-time feedback without performance impact
 
 ### Optimal Settings
 
-- **Parallel Workers**: Start with 4-8 workers, adjust based on your system resources
-- **Batch Size**: 1000-5000 rows per batch usually provides good performance
-- **Connection Pooling**: The tool automatically configures connection pools
+- Parallel Workers: Start with 4-8 workers, adjust based on your system resources
+- Batch Size: 1000-5000 rows per batch usually provides good performance
+- Connection Pooling: The tool automatically configures connection pools
 
 ### Large Databases
 
@@ -416,6 +407,7 @@ Monitor memory usage and adjust settings accordingly.
 ### Real-World Performance Examples
 
 #### Example 1: E-commerce Database
+
 ```
 Database: 50 tables, 10M total rows, complex FK relationships
 pg_dump/pg_restore: 45 minutes (single-threaded)
@@ -423,7 +415,8 @@ pgcopy --parallel 8: 12 minutes (with FK handling)
 Result: 3.75x improvement + automatic FK management
 ```
 
-#### Example 2: SaaS Application Data Refresh  
+#### Example 2: SaaS Application Data Refresh 
+
 ```
 Scenario: Daily staging refresh from production
 Tables: 200+ tables, circular dependencies

@@ -8,39 +8,39 @@ Successfully implemented `pgcopy`, a high-performance Go CLI tool for efficientl
 
 ### 🚀 Core Functionality
 
-- **Parallel Processing**: Configurable worker pools for concurrent table copying
-- **Batch Processing**: Configurable batch sizes for memory-efficient operations
-- **Transaction Safety**: Uses transactions to ensure data consistency
-- **Foreign Key Handling**: Temporarily disables constraints during copy operations
+- Parallel Processing: Configurable worker pools for concurrent table copying
+- Batch Processing: Configurable batch sizes for memory-efficient operations
+- Transaction Safety: Uses transactions to ensure data consistency
+- Foreign Key Handling: Temporarily disables constraints during copy operations
 
 ### 📊 Monitoring & Progress
 
-- **Real-time Progress**: Periodic progress updates during long-running operations
-- **Visual Progress Bar**: schollz/progressbar integration enabled by default with sticky top position and scrolling log messages below
-- **Statistics Tracking**: Comprehensive copy statistics with performance metrics
-- **Dry Run Mode**: Preview operations without actual data copying
+- Real-time Progress: Periodic progress updates during long-running operations
+- Visual Progress Bar: schollz/progressbar integration enabled by default with sticky top position and scrolling log messages below
+- Statistics Tracking: Comprehensive copy statistics with performance metrics
+- Dry Run Mode: Preview operations without actual data copying
 
 ### 🔧 Configuration Options
 
-- **Connection Strings**: Direct PostgreSQL connection string support
-- **Configuration Files**: External config file support for credentials
-- **Table Filtering**: Include/exclude specific tables or schemas
-- **Flexible Parameters**: Configurable parallel workers and batch sizes
+- Connection Strings: Direct PostgreSQL connection string support
+- Configuration Files: External config file support for credentials
+- Table Filtering: Include/exclude specific tables or schemas
+- Flexible Parameters: Configurable parallel workers and batch sizes
 
-### � Advanced Foreign Key Management
+### 🔗 Advanced Foreign Key Management
 
-- **Automatic Detection**: Discovers all foreign key constraints in target tables
-- **Circular Dependency Handling**: Resolves complex FK relationships including cycles
-- **Smart Strategy Selection**: Uses replica mode when available, falls back to drop/recreate
-- **Safe Restoration**: Guarantees FK restoration even after operation failures
-- **Non-Superuser Support**: Works without special database privileges
+- Automatic Detection: Discovers all foreign key constraints in target tables
+- Circular Dependency Handling: Resolves complex FK relationships including cycles
+- Smart Strategy Selection: Uses replica mode when available, falls back to drop/recreate
+- Safe Restoration: Guarantees FK restoration even after operation failures
+- Non-Superuser Support: Works without special database privileges
 
-### �📋 Commands Implemented
+### 📋 Commands Implemented
 
-1. **`copy`** - Main data copying functionality with FK management
-2. **`list`** - List tables with row counts and sizes
-3. **`version`** - Display version information
-4. **`help`** - Comprehensive help system
+1. `copy` - Main data copying functionality with FK management
+2. `list` - List tables with row counts and sizes
+3. `version` - Display version information
+4. `help` - Comprehensive help system
 
 ## Architecture
 
@@ -101,17 +101,17 @@ pgcopy/
 
 ### Database Level
 
-- **Connection Pooling**: Optimized connection pool sizes
-- **Foreign Key Constraints**: Temporarily disabled during copy
-- **Transaction Batching**: Batch inserts within transactions
-- **Ordered Pagination**: Primary key-based ordering for consistent results
+- Connection Pooling: Optimized connection pool sizes
+- Foreign Key Constraints: Temporarily disabled during copy
+- Transaction Batching: Batch inserts within transactions
+- Ordered Pagination: Primary key-based ordering for consistent results
 
 ### Application Level
 
-- **Parallel Workers**: Configurable worker pools (default: 4)
-- **Batch Size**: Configurable batch sizes (default: 1000)
-- **Memory Management**: Efficient memory usage with streaming
-- **Progress Updates**: Throttled progress reporting (every 5 seconds)
+- Parallel Workers: Configurable worker pools (default: 4)
+- Batch Size: Configurable batch sizes (default: 1000)
+- Memory Management: Efficient memory usage with streaming
+- Progress Updates: Throttled progress reporting (every 5 seconds)
 
 ## Usage Examples
 
@@ -172,36 +172,36 @@ pgcopy copy \
 
 ### Testing
 
-- **Unit Tests**: Comprehensive unit tests for core functionality
-- **Integration Tests**: Automated integration test suite
-- **Configuration Validation**: Input validation and error handling
+- Unit Tests: Comprehensive unit tests for core functionality
+- Integration Tests: Automated integration test suite
+- Configuration Validation: Input validation and error handling
 
 ### Build System
 
-- **Makefile**: Automated build process
-- **Cross-Platform**: Support for multiple platforms (Linux, macOS, Windows)
-- **Dependency Management**: Go modules for dependency management
+- Makefile: Automated build process
+- Cross-Platform: Support for multiple platforms (Linux, macOS, Windows)
+- Dependency Management: Go modules for dependency management
 
 ### Code Quality
 
-- **Error Handling**: Comprehensive error handling throughout
-- **Logging**: Structured logging for debugging and monitoring
-- **Documentation**: Extensive inline documentation and README
+- Error Handling: Comprehensive error handling throughout
+- Logging: Structured logging for debugging and monitoring
+- Documentation: Extensive inline documentation and README
 
 ## Dependencies
 
 ### Core Dependencies
 
-- **github.com/lib/pq**: PostgreSQL driver
-- **github.com/spf13/cobra**: CLI framework
-- **github.com/spf13/viper**: Configuration management
-- **github.com/schollz/progressbar/v3**: Visual progress bar for enhanced user experience
+- `github.com/lib/pq`: PostgreSQL driver
+- `github.com/spf13/cobra`: CLI framework
+- `github.com/spf13/viper`: Configuration management
+- `github.com/schollz/progressbar/v3`: Visual progress bar for enhanced user experience
 
 ### Development Tools
 
-- **Go 1.21+**: Modern Go version
-- **Make**: Build automation
-- **Git**: Version control
+- Go 1.21+: Modern Go version
+- Make: Build automation
+- Git: Version control
 
 ## Installation & Deployment
 
@@ -229,27 +229,18 @@ make build-all  # Builds for Linux, macOS, Windows
 
 ### Potential Improvements
 
-1. **Resume Capability**: Implement checkpoint-based resume functionality
-2. **Compression**: Add data compression for network transfers
-3. **Schema Validation**: Automatic schema compatibility checking
-4. **Metrics Export**: Prometheus metrics export
-5. **CDC Support**: Change Data Capture for incremental updates
-
-### Performance Optimizations
-
-1. **Streaming**: Direct streaming without intermediate storage
-2. **Parallel Schema Copy**: Parallel copying within single tables
-3. **Adaptive Batching**: Dynamic batch size adjustment
-4. **Connection Multiplexing**: Advanced connection management
+1. Resume Capability: Implement checkpoint-based resume functionality
+2. Schema Validation: Automatic schema compatibility checking
+3. Adaptive Batching: Dynamic batch size adjustment
+4. Connection Multiplexing: Advanced connection management
 
 ## Conclusion
 
 The `pgcopy` tool successfully addresses the need for efficient PostgreSQL data migration with:
 
-- **High Performance**: Parallel processing and optimized batch operations
-- **Reliability**: Transaction safety and comprehensive error handling
-- **Usability**: Intuitive CLI interface with comprehensive help
-- **Flexibility**: Extensive configuration options and filtering capabilities
-- **Quality**: Comprehensive testing and documentation
+- High Performance: Parallel processing and optimized batch operations
+- Reliability: Transaction safety and comprehensive error handling
+- Usability: Intuitive CLI interface with comprehensive help
+- Flexibility: Extensive configuration options and filtering capabilities
 
 The implementation provides a solid foundation for PostgreSQL data migration tasks while maintaining focus on performance, reliability, and ease of use.
