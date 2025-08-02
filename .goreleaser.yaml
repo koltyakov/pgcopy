@@ -24,7 +24,7 @@ builds:
       - goos: windows
         goarch: arm64
     ldflags:
-      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+      - -s -w -X github.com/koltyakov/pgcopy/cmd.version={{.Version}} -X github.com/koltyakov/pgcopy/cmd.commit={{.Commit}} -X github.com/koltyakov/pgcopy/cmd.date={{.Date}}
 
 # Archive configuration
 archives:

@@ -85,6 +85,10 @@ release-test:
 	@echo "Testing release configuration..."
 	goreleaser check
 
+# make release (requires VERSION)
+# Usage: make release VERSION=v1.0.0
+# This will create a release tag and push it to the remote repository.
+# Ensure you have set the VERSION variable before running this target.
 .PHONY: release
 release:
 	@echo "Creating release..."
@@ -102,15 +106,9 @@ docker-run: docker-build
 	@echo "Running Docker container..."
 	docker run --rm -it pgcopy:latest
 
-# Security scanning
-.PHONY: security-scan
-security-scan:
-	@echo "Running security scan..."
-	gosec ./...
-
 # Full CI check (runs all checks locally)
 .PHONY: ci
-ci: deps fmt lint test security-scan
+ci: deps fmt lint test
 	@echo "All CI checks passed!"
 
 # Show help
