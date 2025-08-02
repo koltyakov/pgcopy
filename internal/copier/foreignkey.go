@@ -49,6 +49,13 @@ func NewForeignKeyManager(db *sql.DB, logger *utils.SimpleLogger) *ForeignKeyMan
 	}
 }
 
+// SetLogger updates the logger for the foreign key manager
+func (fkm *ForeignKeyManager) SetLogger(logger *utils.SimpleLogger) {
+	fkm.mu.Lock()
+	defer fkm.mu.Unlock()
+	fkm.logger = logger
+}
+
 // DetectForeignKeys discovers all foreign keys in the database
 func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 	fkm.logger.LogProgress("Detecting foreign key constraints...")

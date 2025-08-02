@@ -47,22 +47,25 @@ type Config struct {
 	Resume        bool
 	DryRun        bool
 	ProgressBar   bool
+	Interactive   bool
 }
 
 // Copier handles the data copying operation
 type Copier struct {
-	config           *Config
-	sourceDB         *sql.DB
-	destDB           *sql.DB
-	fkManager        *ForeignKeyManager
-	mu               sync.Mutex
-	stats            *CopyStats
-	lastUpdate       time.Time
-	progressBar      *progressbar.ProgressBar
-	fileLogger       *log.Logger         // Logger for copy.log file
-	logFile          *os.File            // File handle for copy.log
-	logger           *utils.SimpleLogger // Utils logger for colorized output
-	tablesInProgress map[string]bool     // Track which tables are currently being processed
+	config             *Config
+	sourceDB           *sql.DB
+	destDB             *sql.DB
+	fkManager          *ForeignKeyManager
+	mu                 sync.Mutex
+	stats              *CopyStats
+	lastUpdate         time.Time
+	progressBar        *progressbar.ProgressBar
+	fileLogger         *log.Logger         // Logger for copy.log file
+	logFile            *os.File            // File handle for copy.log
+	logger             *utils.SimpleLogger // Utils logger for colorized output
+	tablesInProgress   map[string]bool     // Track which tables are currently being processed
+	interactiveMode    bool                // Whether to use interactive display
+	interactiveDisplay *InteractiveDisplay // Interactive progress display
 }
 
 // CopyStats tracks copying statistics
@@ -145,7 +148,7 @@ func New(config *Config) (*Copier, error) {
 	c.destDB.SetConnMaxLifetime(time.Hour)
 
 	// Initialize utils logger first
-	c.logger = utils.NewSimpleLogger(nil)
+	c.logger = utils.NewSilentLogger()
 
 	// Initialize foreign key manager
 	c.fkManager = NewForeignKeyManager(c.destDB, c.logger)
@@ -209,34 +212,9 @@ func (c *Copier) Copy() error {
 
 	// Initialize progress tracking
 	c.lastUpdate = time.Now()
-	if c.config.ProgressBar && totalRows > 0 {
-		// Create a custom progress bar that stays at the top with modern styling
-		c.progressBar = progressbar.NewOptions64(totalRows,
-			progressbar.OptionSetDescription(fmt.Sprintf("Copying %d tables", len(tables))),
-			progressbar.OptionSetWriter(os.Stderr),
-			progressbar.OptionSetPredictTime(true),
-			progressbar.OptionFullWidth(),
-			progressbar.OptionEnableColorCodes(true),
-			progressbar.OptionSetTheme(progressbar.Theme{
-				Saucer:        "█",
-				SaucerHead:    "█",
-				SaucerPadding: "░",
-				BarStart:      "▐",
-				BarEnd:        "▌",
-			}),
-		)
 
-		// Initialize custom logger that works with progress bar
-		writer := &progressBarWriter{progressBar: c.progressBar}
-		c.logger = utils.NewSimpleLogger(log.New(writer, "", log.LstdFlags))
-
-		// Set the global logger to use our custom writer when progress bar is active
-		log.SetOutput(writer)
-	} else if totalRows > 0 {
-		fmt.Printf("Starting copy of %d tables (%s rows) with %d workers\n",
-			len(tables), utils.FormatNumber(totalRows), c.config.Parallel)
-		c.logger = utils.NewSimpleLogger(log.New(os.Stderr, "", log.LstdFlags))
-	}
+	// Initialize display mode based on configuration
+	c.initializeDisplayMode(tables, totalRows)
 
 	// Detect and handle foreign keys
 	if err := c.fkManager.DetectForeignKeys(tables); err != nil {
@@ -265,8 +243,10 @@ func (c *Copier) Copy() error {
 		c.logger.LogWarn("Failed to cleanup FK backup file: %v", cleanupErr)
 	}
 
-	// Finish progress bar if enabled
-	if c.config.ProgressBar && c.progressBar != nil {
+	// Finish progress displays
+	if c.interactiveMode && c.interactiveDisplay != nil {
+		c.interactiveDisplay.Stop()
+	} else if c.config.ProgressBar && c.progressBar != nil {
 		_ = c.progressBar.Finish()
 		fmt.Println() // Add a newline after progress bar
 		// Restore the original logger output
@@ -523,35 +503,8 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 
 	c.stats.RowsCopied += rowsAdded
 
-	if c.config.ProgressBar && c.progressBar != nil {
-		// Calculate speed
-		elapsed := time.Since(c.stats.StartTime)
-		var speedStr string
-		if elapsed.Seconds() > 0 {
-			rowsPerSecond := float64(c.stats.RowsCopied) / elapsed.Seconds()
-			speedStr = fmt.Sprintf(" (%s/s)", utils.FormatNumber(int64(rowsPerSecond)))
-		}
-
-		// Update progress bar description with remaining tables, formatted row counts, and speed
-		description := fmt.Sprintf("Copying rows (%d/%d tables) %s/%s%s",
-			c.stats.TablesProcessed, c.stats.TotalTables,
-			utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), speedStr)
-		c.progressBar.Describe(description)
-
-		// Update progress bar by the number of rows added
-		_ = c.progressBar.Add64(rowsAdded)
-	} else {
-		now := time.Now()
-		if now.Sub(c.lastUpdate) > 5*time.Second { // Update every 5 seconds
-			c.lastUpdate = now
-			percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
-			if c.stats.TotalRows > 0 {
-				fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d/%d tables processed\n",
-					utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed, c.stats.TotalTables)
-				fmt.Printf("Syncing: %s\n", strings.Join(c.getTablesInProgress(), ", "))
-			}
-		}
-	}
+	// Handle different display modes
+	c.handleProgressUpdate(rowsAdded)
 }
 
 // setTableInProgress marks a table as currently being processed
@@ -570,6 +523,32 @@ func (c *Copier) removeTableFromProgress(schema, name string) {
 
 	tableKey := fmt.Sprintf("%s.%s", schema, name)
 	delete(c.tablesInProgress, tableKey)
+
+	// Update interactive display if enabled
+	if c.interactiveMode && c.interactiveDisplay != nil {
+		c.interactiveDisplay.CompleteTable(schema, name, true)
+	}
+}
+
+// startTableInInteractive starts tracking a table in interactive mode
+func (c *Copier) startTableInInteractive(table *TableInfo) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	tableKey := fmt.Sprintf("%s.%s", table.Schema, table.Name)
+	c.tablesInProgress[tableKey] = true
+
+	// Update interactive display if enabled
+	if c.interactiveMode && c.interactiveDisplay != nil {
+		c.interactiveDisplay.StartTable(table.Schema, table.Name, table.RowCount)
+	}
+}
+
+// updateTableProgress updates the progress of a specific table
+func (c *Copier) updateTableProgress(schema, name string, copiedRows int64) {
+	if c.interactiveMode && c.interactiveDisplay != nil {
+		c.interactiveDisplay.UpdateTableProgress(schema, name, copiedRows)
+	}
 }
 
 // getTablesInProgress returns a slice of table names currently being processed
@@ -642,5 +621,92 @@ func (c *Copier) logTableCopy(tableName string, rowCount int64, duration time.Du
 	if c.fileLogger != nil {
 		timestamp := time.Now().Format("2006-01-02 15:04:05")
 		c.fileLogger.Printf("%s | %s | %d rows | %s", timestamp, tableName, rowCount, utils.FormatLogDuration(duration))
+	}
+}
+
+// initializeDisplayMode initializes the appropriate display mode based on configuration
+func (c *Copier) initializeDisplayMode(tables []*TableInfo, totalRows int64) {
+	if c.config.Interactive {
+		// Use interactive mode
+		c.interactiveMode = true
+		c.interactiveDisplay = NewInteractiveDisplay(len(tables))
+		c.interactiveDisplay.SetTotalRows(totalRows) // Set total rows for overall progress
+		c.interactiveDisplay.Start()
+		c.logger = utils.NewSilentLogger() // Silent logger for interactive mode
+		c.fkManager.SetLogger(c.logger)    // Update foreign key manager logger too
+		return
+	}
+
+	if c.config.ProgressBar && totalRows > 0 {
+		// Create a custom progress bar that stays at the top with modern styling
+		c.progressBar = progressbar.NewOptions64(totalRows,
+			progressbar.OptionSetDescription(fmt.Sprintf("Copying %d tables", len(tables))),
+			progressbar.OptionSetWriter(os.Stderr),
+			progressbar.OptionSetPredictTime(true),
+			progressbar.OptionFullWidth(),
+			progressbar.OptionEnableColorCodes(true),
+			progressbar.OptionSetTheme(progressbar.Theme{
+				Saucer:        "█",
+				SaucerHead:    "█",
+				SaucerPadding: "░",
+				BarStart:      "▐",
+				BarEnd:        "▌",
+			}),
+		)
+
+		// Initialize custom logger that works with progress bar
+		writer := &progressBarWriter{progressBar: c.progressBar}
+		c.logger = utils.NewSimpleLogger(log.New(writer, "", log.LstdFlags))
+
+		// Set the global logger to use our custom writer when progress bar is active
+		log.SetOutput(writer)
+		return
+	}
+
+	if totalRows > 0 {
+		fmt.Printf("Starting copy of %d tables (%s rows) with %d workers\n",
+			len(tables), utils.FormatNumber(totalRows), c.config.Parallel)
+		c.logger = utils.NewSimpleLogger(log.New(os.Stderr, "", log.LstdFlags))
+	}
+}
+
+// handleProgressUpdate handles progress updates for different display modes
+func (c *Copier) handleProgressUpdate(rowsAdded int64) {
+	if c.interactiveMode && c.interactiveDisplay != nil {
+		// Interactive mode doesn't need periodic updates here
+		// Progress is updated via the interactive display methods
+		return
+	}
+
+	if c.config.ProgressBar && c.progressBar != nil {
+		// Calculate speed
+		elapsed := time.Since(c.stats.StartTime)
+		var speedStr string
+		if elapsed.Seconds() > 0 {
+			rowsPerSecond := float64(c.stats.RowsCopied) / elapsed.Seconds()
+			speedStr = fmt.Sprintf(" (%s/s)", utils.FormatNumber(int64(rowsPerSecond)))
+		}
+
+		// Update progress bar description with remaining tables, formatted row counts, and speed
+		description := fmt.Sprintf("Copying rows (%d/%d tables) %s/%s%s",
+			c.stats.TablesProcessed, c.stats.TotalTables,
+			utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), speedStr)
+		c.progressBar.Describe(description)
+
+		// Update progress bar by the number of rows added
+		_ = c.progressBar.Add64(rowsAdded)
+		return
+	}
+
+	// Default text-based progress updates
+	now := time.Now()
+	if now.Sub(c.lastUpdate) > 5*time.Second { // Update every 5 seconds
+		c.lastUpdate = now
+		percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
+		if c.stats.TotalRows > 0 {
+			fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d/%d tables processed\n",
+				utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed, c.stats.TotalTables)
+			fmt.Printf("Syncing: %s\n", strings.Join(c.getTablesInProgress(), ", "))
+		}
 	}
 }

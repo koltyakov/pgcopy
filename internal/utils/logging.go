@@ -19,16 +19,26 @@ type Logger interface {
 // SimpleLogger provides basic logging functionality
 type SimpleLogger struct {
 	logger *log.Logger
+	silent bool // When true, all logging is suppressed
 }
 
 // NewSimpleLogger creates a new simple logger
 func NewSimpleLogger(logger *log.Logger) *SimpleLogger {
-	return &SimpleLogger{logger: logger}
+	return &SimpleLogger{logger: logger, silent: false}
+}
+
+// NewSilentLogger creates a new silent logger that suppresses all output
+func NewSilentLogger() *SimpleLogger {
+	return &SimpleLogger{logger: nil, silent: true}
 }
 
 // Logf logs a message using the custom logger when progress bar is active,
 // or the standard logger otherwise
 func (l *SimpleLogger) Logf(format string, args ...interface{}) {
+	if l.silent {
+		return
+	}
+
 	message := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
 
@@ -48,6 +58,10 @@ func (l *SimpleLogger) Logf(format string, args ...interface{}) {
 
 // LogSuccess logs a success message with green color and checkmark
 func (l *SimpleLogger) LogSuccess(format string, args ...interface{}) {
+	if l.silent {
+		return
+	}
+
 	message := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
 
@@ -66,6 +80,10 @@ func (l *SimpleLogger) LogSuccess(format string, args ...interface{}) {
 
 // LogWarn logs a warning message with yellow color and warning icon
 func (l *SimpleLogger) LogWarn(format string, args ...interface{}) {
+	if l.silent {
+		return
+	}
+
 	message := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
 
@@ -84,6 +102,10 @@ func (l *SimpleLogger) LogWarn(format string, args ...interface{}) {
 
 // LogError logs an error message with red color and error icon
 func (l *SimpleLogger) LogError(format string, args ...interface{}) {
+	if l.silent {
+		return
+	}
+
 	message := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
 
@@ -102,6 +124,10 @@ func (l *SimpleLogger) LogError(format string, args ...interface{}) {
 
 // LogProgress logs a progress message with cyan color and progress icon
 func (l *SimpleLogger) LogProgress(format string, args ...interface{}) {
+	if l.silent {
+		return
+	}
+
 	message := fmt.Sprintf(format, args...)
 	timestamp := time.Now().Format("15:04:05")
 

@@ -23,6 +23,7 @@ Examples:
   pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
   pgcopy copy --source-file source.conn --dest-file dest.conn --batch-size 5000
   pgcopy copy --source-file source.conn --dest-file dest.conn --no-progress  # Disable progress for CI
+  pgcopy copy --source-file source.conn --dest-file dest.conn --interactive  # Interactive mode with live table progress
   pgcopy copy -s "..." -d "..." --exclude-tables "temp_*,*_logs,*_cache"     # Exclude with wildcards
   pgcopy copy -s "..." -d "..." --include-tables "user_*,order_*"           # Include with wildcards`,
 	Run: func(cmd *cobra.Command, _ []string) {
@@ -37,6 +38,7 @@ Examples:
 		resume, _ := cmd.Flags().GetBool("resume")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		noProgress, _ := cmd.Flags().GetBool("no-progress")
+		interactive, _ := cmd.Flags().GetBool("interactive")
 
 		config := &copier.Config{
 			SourceConn:    sourceConn,
@@ -49,7 +51,8 @@ Examples:
 			IncludeTables: includeTables,
 			Resume:        resume,
 			DryRun:        dryRun,
-			ProgressBar:   !noProgress, // Enable progress by default, disable if --no-progress is set
+			ProgressBar:   !noProgress && !interactive, // Disable progress bar if interactive mode is enabled
+			Interactive:   interactive,
 		}
 
 		start := time.Now()
@@ -89,4 +92,5 @@ func init() {
 	copyCmd.Flags().Bool("resume", false, "Resume from previous incomplete copy")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("no-progress", false, "Disable progress bar (useful for CI/headless environments)")
+	copyCmd.Flags().Bool("interactive", false, "Enable interactive mode with live table progress display")
 }

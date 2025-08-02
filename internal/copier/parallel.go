@@ -58,12 +58,21 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 	defer wg.Done()
 
 	for table := range tableChan {
-		// Mark table as in progress
-		c.setTableInProgress(table.Schema, table.Name)
+		// Mark table as in progress (for both interactive and non-interactive modes)
+		if c.interactiveMode {
+			c.startTableInInteractive(table)
+		} else {
+			c.setTableInProgress(table.Schema, table.Name)
+		}
 
 		if err := c.copyTable(table); err != nil {
 			c.logger.LogError("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
+
+			// Mark as failed in interactive mode
+			if c.interactiveMode && c.interactiveDisplay != nil {
+				c.interactiveDisplay.CompleteTable(table.Schema, table.Name, false)
+			}
 		} else {
 			c.mu.Lock()
 			c.stats.TablesProcessed++
@@ -233,6 +242,11 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 
 		// Update progress periodically
 		c.updateProgress(batchRowsCopied)
+
+		// Update table-specific progress for interactive mode
+		if c.interactiveMode {
+			c.updateTableProgress(table.Schema, table.Name, rowsCopied)
+		}
 
 		// If we got fewer rows than batch size, we're done
 		if batchRowsCopied < int64(c.config.BatchSize) {
