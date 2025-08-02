@@ -520,6 +520,11 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 
 // ValidateConfig validates the configuration
 func ValidateConfig(config *Config) error {
+	// Check for existing FK backup file that indicates unrestored foreign keys
+	if err := checkForFKBackupFile(); err != nil {
+		return err
+	}
+
 	if config.SourceConn == "" && config.SourceFile == "" {
 		return fmt.Errorf("either --source connection string or --source-file must be provided")
 	}
@@ -532,5 +537,27 @@ func ValidateConfig(config *Config) error {
 	if config.BatchSize < 100 {
 		return fmt.Errorf("batch size must be at least 100")
 	}
+	return nil
+}
+
+// checkForFKBackupFile checks if there's an existing FK backup file that indicates
+// unrestored foreign keys from a previous run, which could cause data integrity issues
+func checkForFKBackupFile() error {
+	// Get the current working directory where the binary is running
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil // If we can't get working directory, proceed anyway
+	}
+
+	backupFile := filepath.Join(cwd, ".fk_backup.sql")
+
+	// Check if the backup file exists
+	if _, err := os.Stat(backupFile); err == nil {
+		return fmt.Errorf("found existing FK backup file '%s' - this indicates unrestored foreign keys from a previous run.\n"+
+			"Please restore foreign keys manually by executing: psql -f %s <connection_string>\n"+
+			"Or remove the file if you're certain all foreign keys are properly restored.\n"+
+			"This safety check prevents potential data integrity issues", backupFile, backupFile)
+	}
+
 	return nil
 }
