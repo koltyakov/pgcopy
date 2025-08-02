@@ -70,23 +70,30 @@ changelog:
       order: 999
 
 # Docker configuration
-dockers:
-  - image_templates:
-      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:latest"
-      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:{{ .Tag }}"
-      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:v{{ .Major }}"
-      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:v{{ .Major }}.{{ .Minor }}"
-    dockerfile: Dockerfile
-    build_flag_templates:
-      - "--pull"
-      - "--label=org.opencontainers.image.created={{.Date}}"
-      - "--label=org.opencontainers.image.title={{.ProjectName}}"
-      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-      - "--label=org.opencontainers.image.version={{.Version}}"
-      - "--label=org.opencontainers.image.source=https://github.com/{{.Env.GITHUB_REPOSITORY}}"
-    extra_files:
-      - README.md
-      - LICENSE
+# dockers:
+#   - image_templates:
+#       - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:latest"
+#       - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:{{ .Tag }}"
+#       - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:v{{ .Major }}"
+#       - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:v{{ .Major }}.{{ .Minor }}"
+#     goos: linux
+#     goarch: amd64
+#     dockerfile: Dockerfile
+#     build_flag_templates:
+#       - "--pull"
+#       - "--build-arg=VERSION={{.Version}}"
+#       - "--build-arg=COMMIT={{.Commit}}"
+#       - "--build-arg=DATE={{.Date}}"
+#       - "--label=org.opencontainers.image.created={{.Date}}"
+#       - "--label=org.opencontainers.image.title={{.ProjectName}}"
+#       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+#       - "--label=org.opencontainers.image.version={{.Version}}"
+#       - "--label=org.opencontainers.image.source=https://github.com/{{.Env.GITHUB_REPOSITORY}}"
+#     extra_files:
+#       - go.mod
+#       - go.sum
+#       - README.md
+#       - LICENSE
 
 # Release configuration
 release:
