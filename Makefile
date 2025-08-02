@@ -88,5 +88,5 @@ help:
 	@echo "  deps          - Install dependencies"
 	@echo "  install       - Install the binary to /usr/local/bin"
 	@echo "  uninstall     - Remove the binary from /usr/local/bin"
-	@echo "  run           - Run the application (use ARGS to pass arguments, e.g., ARGS='copy --source ... --progress')"
+	@echo "  run           - Run the application (use ARGS to pass arguments, e.g., ARGS='copy --source ... --no-progress')"
 	@echo "  help          - Show this help"

@@ -11,5 +11,4 @@ pgcopy copy \
   # --dest "$DEST_DB" \
   --parallel 8 \
   --batch-size 5000 \
-  --exclude-tables "logs,sessions,cache_entries,temp_files" \
-  --progress
+  --exclude-tables "logs,sessions,cache_entries,temp_files"

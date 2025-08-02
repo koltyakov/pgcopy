@@ -6,7 +6,7 @@
 
 - **High Performance**: Parallel table copying with configurable workers
 - **Batch Processing**: Configurable batch sizes for optimal memory usage
-- **Progress Tracking**: Real-time progress monitoring with optional visual progress bar that stays fixed at top while logs scroll below
+- **Progress Tracking**: Real-time progress monitoring with visual progress bar enabled by default (stays fixed at top while logs scroll below)
 - **Flexible Configuration**: Support for connection strings, config files, and command-line options
 - **Table Filtering**: Include/exclude specific tables from the copy operation
 - **Resume Capability**: Resume interrupted copy operations
@@ -71,16 +71,17 @@ pgcopy copy \
 
 ### Progress Bar Mode
 
-Show a visual progress bar during copy operations with log messages scrolling below:
+A visual progress bar is shown by default during copy operations with log messages scrolling below. 
+To disable the progress bar (useful for CI/headless environments):
 
 ```bash
 pgcopy copy \
   --source "postgres://user:pass@localhost:5432/sourcedb" \
   --dest "postgres://user:pass@localhost:5433/destdb" \
-  --progress
+  --no-progress
 ```
 
-The progress bar will stay fixed at the top of the terminal while operational log messages scroll underneath, providing both progress visualization and detailed operation feedback.
+The progress bar stays fixed at the top of the terminal while operational log messages scroll underneath, providing both progress visualization and detailed operation feedback.
 
 ### List Tables
 
@@ -119,7 +120,7 @@ Copy data from source to destination database.
 - `--include-tables`: Tables to include in copying (comma-separated)
 - `--resume`: Resume from previous incomplete copy
 - `--dry-run`: Show what would be copied without actually copying
-- `--progress`: Show progress bar during copy operation
+- `--no-progress`: Disable progress bar (useful for CI/headless environments)
 
 ### `list`
 

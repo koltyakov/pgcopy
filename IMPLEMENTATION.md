@@ -16,7 +16,7 @@ Successfully implemented `pgcopy`, a high-performance Go CLI tool for efficientl
 ### 📊 Monitoring & Progress
 
 - **Real-time Progress**: Periodic progress updates during long-running operations
-- **Visual Progress Bar**: Optional schollz/progressbar integration with sticky top position and scrolling log messages below
+- **Visual Progress Bar**: schollz/progressbar integration enabled by default with sticky top position and scrolling log messages below
 - **Statistics Tracking**: Comprehensive copy statistics with performance metrics
 - **Dry Run Mode**: Preview operations without actual data copying
 
@@ -159,11 +159,13 @@ pgcopy copy \
 
 ### Progress Bar Mode
 
+Progress bar is enabled by default. To disable for CI/headless environments:
+
 ```bash
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
   --dest "postgres://user:pass@dest:5432/db" \
-  --progress
+  --no-progress
 ```
 
 ## Quality Assurance

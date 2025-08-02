@@ -33,12 +33,13 @@ var copyCmd = &cobra.Command{
 	Use:   "copy",
 	Short: "Copy data from source to destination database",
 	Long: `Copy data from source PostgreSQL database to destination PostgreSQL database.
-Both databases must have the same schema structure.
+Both databases must have the same schema structure. Progress bar is enabled by default.
 
 Examples:
   pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --dest "postgres://user:pass@localhost:5433/destdb"
   pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
-  pgcopy copy --source-file source.conf --dest-file dest.conf --batch-size 5000 --progress`,
+  pgcopy copy --source-file source.conf --dest-file dest.conf --batch-size 5000
+  pgcopy copy --source-file source.conf --dest-file dest.conf --no-progress  # Disable progress for CI`,
 	Run: func(cmd *cobra.Command, args []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		destConn, _ := cmd.Flags().GetString("dest")
@@ -50,7 +51,7 @@ Examples:
 		includeTables, _ := cmd.Flags().GetStringSlice("include-tables")
 		resume, _ := cmd.Flags().GetBool("resume")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
-		progressBar, _ := cmd.Flags().GetBool("progress")
+		noProgress, _ := cmd.Flags().GetBool("no-progress")
 
 		config := &copier.Config{
 			SourceConn:    sourceConn,
@@ -63,7 +64,7 @@ Examples:
 			IncludeTables: includeTables,
 			Resume:        resume,
 			DryRun:        dryRun,
-			ProgressBar:   progressBar,
+			ProgressBar:   !noProgress, // Enable progress by default, disable if --no-progress is set
 		}
 
 		start := time.Now()
@@ -102,5 +103,5 @@ func init() {
 	copyCmd.Flags().StringSlice("include-tables", []string{}, "Tables to include in copying (if specified, only these tables will be copied)")
 	copyCmd.Flags().Bool("resume", false, "Resume from previous incomplete copy")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
-	copyCmd.Flags().Bool("progress", false, "Show progress bar during copy operation")
+	copyCmd.Flags().Bool("no-progress", false, "Disable progress bar (useful for CI/headless environments)")
 }
