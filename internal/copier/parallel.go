@@ -58,6 +58,9 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 	defer wg.Done()
 
 	for table := range tableChan {
+		// Mark table as in progress
+		c.setTableInProgress(table.Schema, table.Name)
+
 		if err := c.copyTable(table); err != nil {
 			c.logger.LogError("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
@@ -72,6 +75,9 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 			}
 			c.mu.Unlock()
 		}
+
+		// Remove table from progress tracking when done (success or failure)
+		c.removeTableFromProgress(table.Schema, table.Name)
 	}
 }
 

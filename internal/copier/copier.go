@@ -51,17 +51,18 @@ type Config struct {
 
 // Copier handles the data copying operation
 type Copier struct {
-	config      *Config
-	sourceDB    *sql.DB
-	destDB      *sql.DB
-	fkManager   *ForeignKeyManager
-	mu          sync.Mutex
-	stats       *CopyStats
-	lastUpdate  time.Time
-	progressBar *progressbar.ProgressBar
-	fileLogger  *log.Logger         // Logger for copy.log file
-	logFile     *os.File            // File handle for copy.log
-	logger      *utils.SimpleLogger // Utils logger for colorized output
+	config           *Config
+	sourceDB         *sql.DB
+	destDB           *sql.DB
+	fkManager        *ForeignKeyManager
+	mu               sync.Mutex
+	stats            *CopyStats
+	lastUpdate       time.Time
+	progressBar      *progressbar.ProgressBar
+	fileLogger       *log.Logger         // Logger for copy.log file
+	logFile          *os.File            // File handle for copy.log
+	logger           *utils.SimpleLogger // Utils logger for colorized output
+	tablesInProgress map[string]bool     // Track which tables are currently being processed
 }
 
 // CopyStats tracks copying statistics
@@ -93,6 +94,7 @@ func New(config *Config) (*Copier, error) {
 			StartTime: time.Now(),
 			Errors:    make([]error, 0),
 		},
+		tablesInProgress: make(map[string]bool),
 	}
 
 	var err error
@@ -546,9 +548,37 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 			if c.stats.TotalRows > 0 {
 				fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d/%d tables processed\n",
 					utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed, c.stats.TotalTables)
+				fmt.Printf("Syncing: %s\n", strings.Join(c.getTablesInProgress(), ", "))
 			}
 		}
 	}
+}
+
+// setTableInProgress marks a table as currently being processed
+func (c *Copier) setTableInProgress(schema, name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	tableKey := fmt.Sprintf("%s.%s", schema, name)
+	c.tablesInProgress[tableKey] = true
+}
+
+// removeTableFromProgress removes a table from the in-progress list
+func (c *Copier) removeTableFromProgress(schema, name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	tableKey := fmt.Sprintf("%s.%s", schema, name)
+	delete(c.tablesInProgress, tableKey)
+}
+
+// getTablesInProgress returns a slice of table names currently being processed
+func (c *Copier) getTablesInProgress() []string {
+	tables := make([]string, 0, len(c.tablesInProgress))
+	for table := range c.tablesInProgress {
+		tables = append(tables, utils.HighlightTableName(strings.Split(table, ".")[0], strings.Split(table, ".")[1]))
+	}
+	return tables
 }
 
 // ValidateConfig validates the configuration
