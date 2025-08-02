@@ -82,7 +82,7 @@ func (c *Copier) copyTable(table *TableInfo) error {
 		return nil
 	}
 
-	c.logf("Copying table %s.%s (%d rows)", table.Schema, table.Name, table.RowCount)
+	c.logf("Copying table %s.%s (%s rows)", table.Schema, table.Name, formatNumber(table.RowCount))
 
 	// Drop foreign keys for this table if not using replica mode
 	if err := c.fkManager.DropForeignKeysForTable(table); err != nil {
@@ -107,7 +107,7 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	}
 
 	duration := time.Since(startTime)
-	c.logf("Completed copying table %s.%s (%d rows) in %s", table.Schema, table.Name, table.RowCount, formatDuration(duration))
+	c.logf("Completed copying table %s.%s (%s rows) in %s", table.Schema, table.Name, formatNumber(table.RowCount), formatDuration(duration))
 	return nil
 }
 
@@ -203,11 +203,6 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 
 		// Update progress periodically
 		c.updateProgress(batchRowsCopied)
-
-		// Update global stats
-		c.mu.Lock()
-		c.stats.RowsCopied += batchRowsCopied
-		c.mu.Unlock()
 
 		// If we got fewer rows than batch size, we're done
 		if batchRowsCopied < int64(c.config.BatchSize) {

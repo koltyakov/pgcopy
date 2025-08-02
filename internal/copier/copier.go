@@ -32,6 +32,29 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
 }
 
+// formatNumber formats large numbers with K/M suffixes
+func formatNumber(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1000000 {
+		if n%1000 == 0 {
+			return fmt.Sprintf("%dK", n/1000)
+		}
+		return fmt.Sprintf("%.1fK", float64(n)/1000)
+	}
+	if n < 1000000000 {
+		if n%1000000 == 0 {
+			return fmt.Sprintf("%dM", n/1000000)
+		}
+		return fmt.Sprintf("%.1fM", float64(n)/1000000)
+	}
+	if n%1000000000 == 0 {
+		return fmt.Sprintf("%dB", n/1000000000)
+	}
+	return fmt.Sprintf("%.1fB", float64(n)/1000000000)
+}
+
 // progressBarWriter is a custom writer that ensures log messages
 // appear below the progress bar without interfering with it
 type progressBarWriter struct {
@@ -205,8 +228,6 @@ func (c *Copier) Copy() error {
 		c.progressBar = progressbar.NewOptions64(totalRows,
 			progressbar.OptionSetDescription(fmt.Sprintf("Copying %d tables", len(tables))),
 			progressbar.OptionSetWriter(os.Stderr),
-			progressbar.OptionShowCount(),
-			progressbar.OptionShowIts(),
 			progressbar.OptionSetPredictTime(true),
 			progressbar.OptionFullWidth(),
 			progressbar.OptionEnableColorCodes(true),
@@ -226,8 +247,8 @@ func (c *Copier) Copy() error {
 		// Set the global logger to use our custom writer when progress bar is active
 		log.SetOutput(writer)
 	} else if totalRows > 0 {
-		fmt.Printf("Starting copy of %d tables (%d rows) with %d workers\n",
-			len(tables), totalRows, c.config.Parallel)
+		fmt.Printf("Starting copy of %d tables (%s rows) with %d workers\n",
+			len(tables), formatNumber(totalRows), c.config.Parallel)
 		c.logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
@@ -427,12 +448,12 @@ func (c *Copier) dryRun(tables []*TableInfo) error {
 
 	var totalRows int64
 	for _, table := range tables {
-		fmt.Printf("  %s.%s (%d rows)\n", table.Schema, table.Name, table.RowCount)
+		fmt.Printf("  %s.%s (%s rows)\n", table.Schema, table.Name, formatNumber(table.RowCount))
 		totalRows += table.RowCount
 	}
 
 	fmt.Println("==========================================")
-	fmt.Printf("Total: %d tables, %d rows\n", len(tables), totalRows)
+	fmt.Printf("Total: %d tables, %s rows\n", len(tables), formatNumber(totalRows))
 	fmt.Printf("Parallel workers: %d\n", c.config.Parallel)
 	fmt.Printf("Batch size: %d\n", c.config.BatchSize)
 
@@ -465,14 +486,14 @@ func (c *Copier) printStats() {
 	// Foreign key statistics
 	if c.fkManager != nil {
 		total, dropped := c.fkManager.GetForeignKeyStats()
-		if total > 0 {
+		if dropped > 0 {
 			fmt.Printf("Foreign keys: %d detected, %d temporarily dropped\n", total, dropped)
 		}
 	}
 
 	if c.stats.RowsCopied > 0 && duration.Seconds() > 0 {
 		rowsPerSecond := float64(c.stats.RowsCopied) / duration.Seconds()
-		fmt.Printf("Average speed: %.0f rows/second\n", rowsPerSecond)
+		fmt.Printf("Average speed: %s rows/s\n", formatNumber(int64(rowsPerSecond)))
 	}
 
 	if len(c.stats.Errors) > 0 {
@@ -498,10 +519,21 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.stats.RowsCopied += rowsAdded
+
 	if c.config.ProgressBar && c.progressBar != nil {
-		// Update progress bar description with remaining tables
-		description := fmt.Sprintf("Copying rows (%d/%d tables)",
-			c.stats.TablesProcessed, c.stats.TotalTables)
+		// Calculate speed
+		elapsed := time.Since(c.stats.StartTime)
+		var speedStr string
+		if elapsed.Seconds() > 0 {
+			rowsPerSecond := float64(c.stats.RowsCopied) / elapsed.Seconds()
+			speedStr = fmt.Sprintf(" (%s/s)", formatNumber(int64(rowsPerSecond)))
+		}
+
+		// Update progress bar description with remaining tables, formatted row counts, and speed
+		description := fmt.Sprintf("Copying rows (%d/%d tables) %s/%s%s",
+			c.stats.TablesProcessed, c.stats.TotalTables,
+			formatNumber(c.stats.RowsCopied), formatNumber(c.stats.TotalRows), speedStr)
 		c.progressBar.Describe(description)
 
 		// Update progress bar by the number of rows added
@@ -512,8 +544,8 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 			c.lastUpdate = now
 			percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
 			if c.stats.TotalRows > 0 {
-				fmt.Printf("Progress: %d/%d rows (%.1f%%) - %d tables processed\n",
-					c.stats.RowsCopied, c.stats.TotalRows, percentage, c.stats.TablesProcessed)
+				fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d tables processed\n",
+					formatNumber(c.stats.RowsCopied), formatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed)
 			}
 		}
 	}
