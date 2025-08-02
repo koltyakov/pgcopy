@@ -4,6 +4,7 @@ package copier
 import (
 	"fmt"
 	"os"
+	"runtime"
 )
 
 // ANSI color codes
@@ -30,6 +31,11 @@ func colorize(color, text string) string {
 
 // isColorSupported checks if the terminal supports colors
 func isColorSupported() bool {
+	// Disable colors on Windows
+	if runtime.GOOS == "windows" {
+		return false
+	}
+
 	// Check if we're outputting to a terminal and not being redirected
 	if fi, err := os.Stderr.Stat(); err == nil {
 		return (fi.Mode() & os.ModeCharDevice) != 0
@@ -66,6 +72,6 @@ func highlightFKName(fkName string) string {
 }
 
 // highlightNumber highlights numbers in brackets and standalone numbers
-func highlightNumber(number interface{}) string {
+func highlightNumber(number any) string {
 	return colorize(ColorYellow+ColorBold, fmt.Sprintf("%v", number))
 }
