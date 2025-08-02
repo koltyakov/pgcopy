@@ -478,30 +478,61 @@ func readConnectionFromFile(filename string) (string, error) {
 // printStats prints final copy statistics
 func (c *Copier) printStats() {
 	duration := time.Since(c.stats.StartTime)
-	fmt.Printf("\n=== Copy Statistics ===\n")
-	fmt.Printf("Tables processed: %d/%d\n", c.stats.TablesProcessed, c.stats.TotalTables)
-	fmt.Printf("Rows copied: %d\n", c.stats.RowsCopied)
-	fmt.Printf("Duration: %s\n", formatDuration(duration))
+
+	// Create a beautiful table for the statistics
+	fmt.Printf("\n")
+	fmt.Printf("╔══════════════════════════════════════════════════════════════╗\n")
+	fmt.Printf("║                        📊 COPY STATISTICS                    ║\n")
+	fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
+
+	// Calculate column widths for proper alignment
+	maxLabelWidth := 18
+	maxValueWidth := 35
+
+	// Main statistics
+	if c.stats.TablesProcessed == c.stats.TotalTables {
+		fmt.Printf("║  📋 %-*s  %*d  ║\n", maxLabelWidth, "Tables Processed:", maxValueWidth, c.stats.TablesProcessed)
+	} else {
+		fmt.Printf("║  📋 %-*s  %*s  ║\n", maxLabelWidth, "Tables Processed:", maxValueWidth,
+			fmt.Sprintf("%d / %d", c.stats.TablesProcessed, c.stats.TotalTables))
+	}
+	fmt.Printf("║  📊 %-*s  %*d  ║\n", maxLabelWidth, "Rows Copied:", maxValueWidth, c.stats.RowsCopied)
+	fmt.Printf("║  ⏱️  %-*s  %*s  ║\n", maxLabelWidth, "Duration:", maxValueWidth,
+		formatDuration(duration))
+
+	if c.stats.RowsCopied > 0 && duration.Seconds() > 0 {
+		rowsPerSecond := float64(c.stats.RowsCopied) / duration.Seconds()
+		fmt.Printf("║  🚀 %-*s  %*s  ║\n", maxLabelWidth, "Average Speed:", maxValueWidth,
+			fmt.Sprintf("%d rows/s", int(rowsPerSecond)))
+	}
 
 	// Foreign key statistics
 	if c.fkManager != nil {
 		total, dropped := c.fkManager.GetForeignKeyStats()
 		if dropped > 0 {
-			fmt.Printf("Foreign keys: %d detected, %d temporarily dropped\n", total, dropped)
+			fmt.Printf("║  🔗 %-*s  %*s  ║\n", maxLabelWidth, "Foreign Keys:", maxValueWidth,
+				fmt.Sprintf("%d detected, %d dropped", total, dropped))
 		}
 	}
 
-	if c.stats.RowsCopied > 0 && duration.Seconds() > 0 {
-		rowsPerSecond := float64(c.stats.RowsCopied) / duration.Seconds()
-		fmt.Printf("Average speed: %s rows/s\n", formatNumber(int64(rowsPerSecond)))
-	}
-
+	// Errors section (if any)
 	if len(c.stats.Errors) > 0 {
-		fmt.Printf("Errors encountered: %d\n", len(c.stats.Errors))
+		fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
+		fmt.Printf("║                          ⚠️  ERRORS                          ║\n")
+		fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
+
 		for i, err := range c.stats.Errors {
-			fmt.Printf("  %d: %v\n", i+1, err)
+			errorText := err.Error()
+			// Truncate long error messages
+			if len(errorText) > 55 {
+				errorText = errorText[:52] + "..."
+			}
+			fmt.Printf("║  %d. %-55s ║\n", i+1, errorText)
 		}
 	}
+
+	fmt.Printf("╚══════════════════════════════════════════════════════════════╝\n")
+	fmt.Printf("\n")
 }
 
 // logf logs a message using the custom logger when progress bar is active,
