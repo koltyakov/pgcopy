@@ -1,3 +1,4 @@
+// Package copier provides functionality for copying data between PostgreSQL databases
 package copier
 
 import (

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	_ "github.com/lib/pq"
+	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -146,10 +146,14 @@ func New(config *Config) (*Copier, error) {
 // Close closes database connections
 func (c *Copier) Close() {
 	if c.sourceDB != nil {
-		c.sourceDB.Close()
+		if err := c.sourceDB.Close(); err != nil {
+			c.logError("Failed to close source database connection: %v", err)
+		}
 	}
 	if c.destDB != nil {
-		c.destDB.Close()
+		if err := c.destDB.Close(); err != nil {
+			c.logError("Failed to close destination database connection: %v", err)
+		}
 	}
 }
 
@@ -169,11 +173,7 @@ func (c *Copier) Copy() error {
 	c.stats.TotalTables = int64(len(tables))
 
 	// Calculate total rows for progress tracking
-	totalRows, err := c.calculateTotalRows(tables)
-	if err != nil {
-		c.logWarn("Failed to calculate total rows: %v", err)
-		totalRows = 0
-	}
+	totalRows := c.calculateTotalRows(tables)
 	c.stats.TotalRows = totalRows
 
 	if c.config.DryRun {
@@ -240,7 +240,7 @@ func (c *Copier) Copy() error {
 
 	// Finish progress bar if enabled
 	if c.config.ProgressBar && c.progressBar != nil {
-		c.progressBar.Finish()
+		_ = c.progressBar.Finish()
 		fmt.Println() // Add a newline after progress bar
 		// Restore the original logger output
 		log.SetOutput(os.Stderr)
@@ -268,7 +268,11 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			c.logError("Failed to close rows: %v", err)
+		}
+	}()
 
 	var tables []*TableInfo
 	for rows.Next() {
@@ -378,7 +382,11 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			c.logError("Failed to close rows: %v", err)
+		}
+	}()
 
 	table.Columns = make([]string, 0)
 	for rows.Next() {
@@ -404,7 +412,11 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 		table.PKColumns = make([]string, 0)
 		return nil
 	}
-	defer pkRows.Close()
+	defer func() {
+		if err := pkRows.Close(); err != nil {
+			c.logError("Failed to close primary key rows: %v", err)
+		}
+	}()
 
 	table.PKColumns = make([]string, 0)
 	for pkRows.Next() {
@@ -419,11 +431,11 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 }
 
 // calculateTotalRows calculates the total number of rows across all tables
-func (c *Copier) calculateTotalRows(tables []*TableInfo) (int64, error) {
+func (c *Copier) calculateTotalRows(tables []*TableInfo) int64 {
 	var total int64
 	for _, table := range tables {
 		// Get actual row count for better accuracy
-		query := fmt.Sprintf("SELECT COUNT(*) FROM %s.\"%s\"", table.Schema, table.Name)
+		query := fmt.Sprintf("SELECT COUNT(*) FROM %s.\"%s\"", table.Schema, table.Name) // #nosec G201 - schema and table names from trusted database query
 		var count int64
 		if err := c.sourceDB.QueryRow(query).Scan(&count); err != nil {
 			// Use approximate count if exact count fails
@@ -432,7 +444,7 @@ func (c *Copier) calculateTotalRows(tables []*TableInfo) (int64, error) {
 		table.RowCount = count
 		total += count
 	}
-	return total, nil
+	return total
 }
 
 // dryRun shows what would be copied without actually copying
@@ -461,7 +473,7 @@ func readConnectionFromFile(filename string) (string, error) {
 		return "", err
 	}
 
-	content, err := os.ReadFile(absPath)
+	content, err := os.ReadFile(absPath) // #nosec G304 - reading user-specified configuration file
 	if err != nil {
 		return "", err
 	}
@@ -492,7 +504,7 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 		c.progressBar.Describe(description)
 
 		// Update progress bar by the number of rows added
-		c.progressBar.Add64(rowsAdded)
+		_ = c.progressBar.Add64(rowsAdded)
 	} else {
 		now := time.Now()
 		if now.Sub(c.lastUpdate) > 5*time.Second { // Update every 5 seconds

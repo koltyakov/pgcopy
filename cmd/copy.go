@@ -1,3 +1,4 @@
+// Package cmd provides command-line interface for pgcopy
 package cmd
 
 import (
@@ -42,7 +43,7 @@ Examples:
   pgcopy copy --source-file source.conn --dest-file dest.conn --no-progress  # Disable progress for CI
   pgcopy copy -s "..." -d "..." --exclude-tables "temp_*,*_logs,*_cache"     # Exclude with wildcards
   pgcopy copy -s "..." -d "..." --include-tables "user_*,order_*"           # Include with wildcards`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		destConn, _ := cmd.Flags().GetString("dest")
 		sourceFile, _ := cmd.Flags().GetString("source-file")

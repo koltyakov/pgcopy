@@ -70,6 +70,7 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 		return nil
 	}
 
+	// #nosec G202 - SQL concatenation is safe here as tableFilters contains sanitized schema.table names from database
 	query := `
 		SELECT 
 			tc.constraint_name,
@@ -101,7 +102,11 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 	if err != nil {
 		return fmt.Errorf("failed to query foreign keys: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			fkm.logger.logError("Failed to close foreign key rows: %v", err)
+		}
+	}()
 
 	fkm.foreignKeys = make([]ForeignKey, 0)
 	for rows.Next() {
@@ -226,10 +231,9 @@ func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 			// fkm.logger.logSuccess("Foreign keys for %s handled via replica mode (%s constraints)",
 			// 	highlightTableName(table.Schema, table.Name), highlightNumber(len(relatedFKs)))
 			return nil
-		} else {
-			fkm.logger.logProgress("Managing %s foreign key constraint(s) for table %s",
-				highlightNumber(len(relatedFKs)), highlightTableName(table.Schema, table.Name))
 		}
+		fkm.logger.logProgress("Managing %s foreign key constraint(s) for table %s",
+			highlightNumber(len(relatedFKs)), highlightTableName(table.Schema, table.Name))
 	}
 
 	// Drop the foreign keys if not using replica mode
@@ -491,7 +495,7 @@ func (fkm *ForeignKeyManager) writeBackupSnapshot() error {
 	// Remove trailing empty line
 	contentStr := strings.TrimSuffix(content.String(), "\n")
 
-	return os.WriteFile(fkm.backupFile, []byte(contentStr), 0644)
+	return os.WriteFile(fkm.backupFile, []byte(contentStr), 0600)
 }
 
 // CleanupBackupFile removes the backup file on successful completion

@@ -119,7 +119,15 @@ func (c *Copier) clearDestinationTable(table *TableInfo) error {
 		if err != nil {
 			return fmt.Errorf("failed to begin transaction for truncate: %w", err)
 		}
-		defer tx.Rollback()
+
+		committed := false
+		defer func() {
+			if !committed {
+				if err := tx.Rollback(); err != nil {
+					c.logError("Failed to rollback truncate transaction: %v", err)
+				}
+			}
+		}()
 
 		if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
 			return fmt.Errorf("failed to set replica mode for truncate: %w", err)
@@ -130,12 +138,15 @@ func (c *Copier) clearDestinationTable(table *TableInfo) error {
 			return err
 		}
 
-		return tx.Commit()
-	} else {
-		query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
-		_, err := c.destDB.Exec(query)
+		err = tx.Commit()
+		if err == nil {
+			committed = true
+		}
 		return err
 	}
+	query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
+	_, err := c.destDB.Exec(query)
+	return err
 }
 
 // copyTableData copies table data in batches
@@ -154,7 +165,7 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 	placeholderList := strings.Join(placeholders, ", ")
 
 	// Prepare insert statement for destination
-	insertQuery := fmt.Sprintf(
+	insertQuery := fmt.Sprintf( // #nosec G201 - schema and table names from trusted database query
 		"INSERT INTO %s.\"%s\" (%s) VALUES (%s)",
 		table.Schema, table.Name, columnList, placeholderList,
 	)
@@ -163,7 +174,11 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 	if err != nil {
 		return fmt.Errorf("failed to prepare insert statement: %w", err)
 	}
-	defer insertStmt.Close()
+	defer func() {
+		if err := insertStmt.Close(); err != nil {
+			c.logError("Failed to close insert statement: %v", err)
+		}
+	}()
 
 	// Build select query with ordering for consistent pagination
 	var selectQuery string
@@ -193,7 +208,9 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 		}
 
 		batchRowsCopied, err := c.processBatch(rows, insertStmt, table)
-		rows.Close()
+		if err := rows.Close(); err != nil {
+			c.logError("Failed to close batch rows: %v", err)
+		}
 
 		if err != nil {
 			return fmt.Errorf("failed to process batch: %w", err)
@@ -221,7 +238,15 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 	if err != nil {
 		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
-	defer tx.Rollback()
+
+	committed := false
+	defer func() {
+		if !committed {
+			if err := tx.Rollback(); err != nil {
+				c.logError("Failed to rollback batch transaction: %v", err)
+			}
+		}
+	}()
 
 	// Set replica mode for this transaction if FK manager is using it
 	if c.fkManager.IsUsingReplicaMode() {
@@ -231,7 +256,11 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 	}
 
 	txStmt := tx.Stmt(insertStmt)
-	defer txStmt.Close()
+	defer func() {
+		if err := txStmt.Close(); err != nil {
+			c.logError("Failed to close transaction statement: %v", err)
+		}
+	}()
 
 	var batchSize int64
 	values := make([]interface{}, len(table.Columns))
@@ -260,6 +289,7 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 	if err := tx.Commit(); err != nil {
 		return batchSize, fmt.Errorf("failed to commit transaction: %w", err)
 	}
+	committed = true
 
 	return batchSize, nil
 }

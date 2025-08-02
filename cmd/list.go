@@ -1,3 +1,4 @@
+// Package cmd provides command-line interface for pgcopy
 package cmd
 
 import (
@@ -7,7 +8,7 @@ import (
 	"os"
 	"text/tabwriter"
 
-	_ "github.com/lib/pq"
+	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/spf13/cobra"
 )
 
@@ -44,7 +45,7 @@ This helps you understand what will be copied before running the copy command.
 Examples:
   pgcopy list --source "postgres://user:pass@localhost:5432/mydb"
   pgcopy list -s "postgres://user:pass@localhost:5432/mydb" --schema public`,
-	Run: func(cmd *cobra.Command, args []string) {
+	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		sourceFile, _ := cmd.Flags().GetString("source-file")
 		schema, _ := cmd.Flags().GetString("schema")
@@ -57,7 +58,7 @@ Examples:
 		var err error
 
 		if sourceFile != "" {
-			content, err := os.ReadFile(sourceFile)
+			content, err := os.ReadFile(sourceFile) // #nosec G304 - file path from command line argument
 			if err != nil {
 				log.Fatalf("Failed to read source file: %v", err)
 			}
@@ -70,7 +71,11 @@ Examples:
 		if err != nil {
 			log.Fatalf("Failed to connect to database: %v", err)
 		}
-		defer db.Close()
+		defer func() {
+			if err := db.Close(); err != nil {
+				log.Printf("Failed to close database connection: %v", err)
+			}
+		}()
 
 		if err = db.Ping(); err != nil {
 			log.Fatalf("Failed to ping database: %v", err)
@@ -88,22 +93,23 @@ Examples:
 
 		// Print tables in a nice format
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "SCHEMA\tTABLE\tROW COUNT\tSIZE")
-		fmt.Fprintln(w, "------\t-----\t---------\t----")
+		_, _ = fmt.Fprintln(w, "SCHEMA\tTABLE\tROW COUNT\tSIZE")
+		_, _ = fmt.Fprintln(w, "------\t-----\t---------\t----")
 
 		var totalRows int64
 		for _, table := range tables {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
 				table.Schema, table.Name, formatNumberList(table.RowCount), table.Size)
 			totalRows += table.RowCount
 		}
 
-		fmt.Fprintln(w, "------\t-----\t---------\t----")
-		fmt.Fprintf(w, "TOTAL\t%d tables\t%s rows\t\n", len(tables), formatNumberList(totalRows))
-		w.Flush()
+		_, _ = fmt.Fprintln(w, "------\t-----\t---------\t----")
+		_, _ = fmt.Fprintf(w, "TOTAL\t%d tables\t%s rows\t\n", len(tables), formatNumberList(totalRows))
+		_ = w.Flush()
 	},
 }
 
+// TableSummary represents information about a database table including schema, name, row count and size
 type TableSummary struct {
 	Schema   string
 	Name     string
@@ -150,7 +156,11 @@ func getTables(db *sql.DB, schema string) ([]TableSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() {
+		if err := rows.Close(); err != nil {
+			log.Printf("Failed to close rows: %v", err)
+		}
+	}()
 
 	var tables []TableSummary
 	for rows.Next() {

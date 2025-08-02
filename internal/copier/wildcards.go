@@ -34,8 +34,3 @@ func matchesAnyPattern(text string, patterns []string) bool {
 	}
 	return false
 }
-
-// isWildcardPattern checks if a string contains wildcard characters
-func isWildcardPattern(pattern string) bool {
-	return strings.Contains(pattern, "*")
-}
