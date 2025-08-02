@@ -1,3 +1,5 @@
+// Package copier provides functionality for copying data between PostgreSQL databases.
+// It handles table discovery, foreign key management, parallel copying, and progress tracking.
 package copier
 
 import (
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/pgcopy/internal/utils"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/schollz/progressbar/v3"
 )
@@ -56,9 +59,9 @@ type Copier struct {
 	stats       *CopyStats
 	lastUpdate  time.Time
 	progressBar *progressbar.ProgressBar
-	logger      *log.Logger
-	fileLogger  *log.Logger // Logger for copy.log file
-	logFile     *os.File    // File handle for copy.log
+	fileLogger  *log.Logger         // Logger for copy.log file
+	logFile     *os.File            // File handle for copy.log
+	logger      *utils.SimpleLogger // Utils logger for colorized output
 }
 
 // CopyStats tracks copying statistics
@@ -139,8 +142,11 @@ func New(config *Config) (*Copier, error) {
 	c.destDB.SetMaxIdleConns(config.Parallel)
 	c.destDB.SetConnMaxLifetime(time.Hour)
 
+	// Initialize utils logger first
+	c.logger = utils.NewSimpleLogger(nil)
+
 	// Initialize foreign key manager
-	c.fkManager = NewForeignKeyManager(c.destDB, c)
+	c.fkManager = NewForeignKeyManager(c.destDB, c.logger)
 
 	// Initialize file logger for copy.log
 	if err := c.initFileLogger(); err != nil {
@@ -154,17 +160,17 @@ func New(config *Config) (*Copier, error) {
 func (c *Copier) Close() {
 	if c.sourceDB != nil {
 		if err := c.sourceDB.Close(); err != nil {
-			c.logError("Failed to close source database connection: %v", err)
+			c.logger.LogError("Failed to close source database connection: %v", err)
 		}
 	}
 	if c.destDB != nil {
 		if err := c.destDB.Close(); err != nil {
-			c.logError("Failed to close destination database connection: %v", err)
+			c.logger.LogError("Failed to close destination database connection: %v", err)
 		}
 	}
 	if c.logFile != nil {
 		if err := c.logFile.Close(); err != nil {
-			// Can't use c.logError here since we're closing the log file
+			// Can't use c.logger.LogError here since we're closing the log file
 			fmt.Fprintf(os.Stderr, "Failed to close copy.log file: %v\n", err)
 		}
 	}
@@ -220,14 +226,14 @@ func (c *Copier) Copy() error {
 
 		// Initialize custom logger that works with progress bar
 		writer := &progressBarWriter{progressBar: c.progressBar}
-		c.logger = log.New(writer, "", log.LstdFlags)
+		c.logger = utils.NewSimpleLogger(log.New(writer, "", log.LstdFlags))
 
 		// Set the global logger to use our custom writer when progress bar is active
 		log.SetOutput(writer)
 	} else if totalRows > 0 {
 		fmt.Printf("Starting copy of %d tables (%s rows) with %d workers\n",
-			len(tables), formatNumber(totalRows), c.config.Parallel)
-		c.logger = log.New(os.Stderr, "", log.LstdFlags)
+			len(tables), utils.FormatNumber(totalRows), c.config.Parallel)
+		c.logger = utils.NewSimpleLogger(log.New(os.Stderr, "", log.LstdFlags))
 	}
 
 	// Detect and handle foreign keys
@@ -249,12 +255,12 @@ func (c *Copier) Copy() error {
 
 	// Try to recover any remaining FKs from backup file before cleanup
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
-		c.logWarn("Failed to recover FKs from backup file: %v", recoveryErr)
+		c.logger.LogWarn("Failed to recover FKs from backup file: %v", recoveryErr)
 	}
 
 	// Clean up backup file on successful completion
 	if cleanupErr := c.fkManager.CleanupBackupFile(); cleanupErr != nil {
-		c.logWarn("Failed to cleanup FK backup file: %v", cleanupErr)
+		c.logger.LogWarn("Failed to cleanup FK backup file: %v", cleanupErr)
 	}
 
 	// Finish progress bar if enabled
@@ -273,7 +279,7 @@ func (c *Copier) Copy() error {
 		timestamp := time.Now().Format("2006-01-02 15:04:05")
 		totalDuration := time.Since(c.stats.StartTime)
 		c.fileLogger.Printf("%s | COPY_COMPLETE | %d tables | %d rows | %s",
-			timestamp, c.stats.TablesProcessed, c.stats.RowsCopied, c.formatLogDuration(totalDuration))
+			timestamp, c.stats.TablesProcessed, c.stats.RowsCopied, utils.FormatLogDuration(totalDuration))
 	}
 
 	return nil
@@ -297,7 +303,7 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			c.logError("Failed to close rows: %v", err)
+			c.logger.LogError("Failed to close rows: %v", err)
 		}
 	}()
 
@@ -323,7 +329,7 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 
 		// Get column information
 		if err := c.getTableColumns(tableInfo); err != nil {
-			c.logWarn("Failed to get columns for %s: %v", highlightTableName(schema, name), err)
+			c.logger.LogWarn("Failed to get columns for %s: %v", utils.HighlightTableName(schema, name), err)
 			continue
 		}
 
@@ -354,13 +360,13 @@ func (c *Copier) shouldSkipTable(schema, table string) bool {
 			}
 
 			// Check wildcard pattern match for table name
-			if matchesPattern(table, includePattern) {
+			if utils.MatchesPattern(table, includePattern) {
 				found = true
 				break
 			}
 
 			// Check wildcard pattern match for full name (schema.table)
-			if matchesPattern(fullName, includePattern) {
+			if utils.MatchesPattern(fullName, includePattern) {
 				found = true
 				break
 			}
@@ -383,12 +389,12 @@ func (c *Copier) shouldSkipTable(schema, table string) bool {
 		}
 
 		// Check wildcard pattern match for table name
-		if matchesPattern(table, excludePattern) {
+		if utils.MatchesPattern(table, excludePattern) {
 			return true
 		}
 
 		// Check wildcard pattern match for full name (schema.table)
-		if matchesPattern(fullName, excludePattern) {
+		if utils.MatchesPattern(fullName, excludePattern) {
 			return true
 		}
 	}
@@ -411,7 +417,7 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			c.logError("Failed to close rows: %v", err)
+			c.logger.LogError("Failed to close rows: %v", err)
 		}
 	}()
 
@@ -441,7 +447,7 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 	}
 	defer func() {
 		if err := pkRows.Close(); err != nil {
-			c.logError("Failed to close primary key rows: %v", err)
+			c.logger.LogError("Failed to close primary key rows: %v", err)
 		}
 	}()
 
@@ -481,12 +487,12 @@ func (c *Copier) dryRun(tables []*TableInfo) error {
 
 	var totalRows int64
 	for _, table := range tables {
-		fmt.Printf("  %s.%s (%s rows)\n", table.Schema, table.Name, formatNumber(table.RowCount))
+		fmt.Printf("  %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.RowCount))
 		totalRows += table.RowCount
 	}
 
 	fmt.Println("==========================================")
-	fmt.Printf("Total: %d tables, %s rows\n", len(tables), formatNumber(totalRows))
+	fmt.Printf("Total: %d tables, %s rows\n", len(tables), utils.FormatNumber(totalRows))
 	fmt.Printf("Parallel workers: %d\n", c.config.Parallel)
 	fmt.Printf("Batch size: %d\n", c.config.BatchSize)
 
@@ -521,13 +527,13 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 		var speedStr string
 		if elapsed.Seconds() > 0 {
 			rowsPerSecond := float64(c.stats.RowsCopied) / elapsed.Seconds()
-			speedStr = fmt.Sprintf(" (%s/s)", formatNumber(int64(rowsPerSecond)))
+			speedStr = fmt.Sprintf(" (%s/s)", utils.FormatNumber(int64(rowsPerSecond)))
 		}
 
 		// Update progress bar description with remaining tables, formatted row counts, and speed
 		description := fmt.Sprintf("Copying rows (%d/%d tables) %s/%s%s",
 			c.stats.TablesProcessed, c.stats.TotalTables,
-			formatNumber(c.stats.RowsCopied), formatNumber(c.stats.TotalRows), speedStr)
+			utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), speedStr)
 		c.progressBar.Describe(description)
 
 		// Update progress bar by the number of rows added
@@ -539,7 +545,7 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 			percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
 			if c.stats.TotalRows > 0 {
 				fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d tables processed\n",
-					formatNumber(c.stats.RowsCopied), formatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed)
+					utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed)
 			}
 		}
 	}
@@ -605,33 +611,6 @@ func (c *Copier) initFileLogger() error {
 func (c *Copier) logTableCopy(tableName string, rowCount int64, duration time.Duration) {
 	if c.fileLogger != nil {
 		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		c.fileLogger.Printf("%s | %s | %d rows | %s", timestamp, tableName, rowCount, c.formatLogDuration(duration))
+		c.fileLogger.Printf("%s | %s | %d rows | %s", timestamp, tableName, rowCount, utils.FormatLogDuration(duration))
 	}
-}
-
-// formatLogDuration formats duration for log files with rounded values
-func (c *Copier) formatLogDuration(d time.Duration) string {
-	if d < time.Second {
-		// Round to nearest millisecond
-		ms := d.Round(time.Millisecond)
-		return fmt.Sprintf("%dms", ms.Milliseconds())
-	}
-	if d < time.Minute {
-		// Round to nearest 100ms for seconds
-		rounded := d.Round(100 * time.Millisecond)
-		return fmt.Sprintf("%.1fs", rounded.Seconds())
-	}
-	if d < time.Hour {
-		// Round to nearest second for minutes
-		rounded := d.Round(time.Second)
-		minutes := int(rounded.Minutes())
-		seconds := int(rounded.Seconds()) % 60
-		return fmt.Sprintf("%dm%ds", minutes, seconds)
-	}
-	// Round to nearest second for hours
-	rounded := d.Round(time.Second)
-	hours := int(rounded.Hours())
-	minutes := int(rounded.Minutes()) % 60
-	seconds := int(rounded.Seconds()) % 60
-	return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
 }

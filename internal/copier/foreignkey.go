@@ -7,16 +7,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
-)
 
-// Logger interface for colorized logging
-type Logger interface {
-	logf(format string, args ...interface{})
-	logSuccess(format string, args ...interface{})
-	logWarn(format string, args ...interface{})
-	logError(format string, args ...interface{})
-	logProgress(format string, args ...interface{})
-}
+	"github.com/koltyakov/pgcopy/internal/utils"
+)
 
 // ForeignKey represents a foreign key constraint
 type ForeignKey struct {
@@ -35,7 +28,7 @@ type ForeignKey struct {
 // ForeignKeyManager handles foreign key operations
 type ForeignKeyManager struct {
 	db                   *sql.DB
-	logger               Logger
+	logger               *utils.SimpleLogger
 	foreignKeys          []ForeignKey
 	droppedKeys          []ForeignKey
 	useReplica           bool
@@ -45,7 +38,7 @@ type ForeignKeyManager struct {
 }
 
 // NewForeignKeyManager creates a new foreign key manager
-func NewForeignKeyManager(db *sql.DB, logger Logger) *ForeignKeyManager {
+func NewForeignKeyManager(db *sql.DB, logger *utils.SimpleLogger) *ForeignKeyManager {
 	return &ForeignKeyManager{
 		db:                   db,
 		logger:               logger,
@@ -58,7 +51,7 @@ func NewForeignKeyManager(db *sql.DB, logger Logger) *ForeignKeyManager {
 
 // DetectForeignKeys discovers all foreign keys in the database
 func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
-	fkm.logger.logProgress("Detecting foreign key constraints...")
+	fkm.logger.LogProgress("Detecting foreign key constraints...")
 
 	// Build table filter for IN clause
 	tableFilters := make([]string, 0, len(tables))
@@ -104,7 +97,7 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			fkm.logger.logError("Failed to close foreign key rows: %v", err)
+			fkm.logger.LogError("Failed to close foreign key rows: %v", err)
 		}
 	}()
 
@@ -137,7 +130,7 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 		fkm.foreignKeys = append(fkm.foreignKeys, fk)
 	}
 
-	fkm.logger.logSuccess("Found %s foreign key constraints", highlightNumber(len(fkm.foreignKeys)))
+	fkm.logger.LogSuccess("Found %s foreign key constraints", utils.HighlightNumber(len(fkm.foreignKeys)))
 	return rows.Err()
 }
 
@@ -180,13 +173,13 @@ func (fkm *ForeignKeyManager) buildConstraintDefinition(fk *ForeignKey) string {
 func (fkm *ForeignKeyManager) TryUseReplicaMode() error {
 	_, err := fkm.db.Exec("SET session_replication_role = replica")
 	if err != nil {
-		fkm.logger.logWarn("Cannot use replica mode (requires superuser), will drop/recreate FKs: %v", err)
-		fkm.logger.logProgress("FK definitions will be backed up to: %s", fkm.backupFile)
+		fkm.logger.LogWarn("Cannot use replica mode (requires superuser), will drop/recreate FKs: %v", err)
+		fkm.logger.LogProgress("FK definitions will be backed up to: %s", fkm.backupFile)
 		fkm.useReplica = false
 		return nil
 	}
 
-	fkm.logger.logSuccess("Using replica mode for foreign key handling")
+	fkm.logger.LogSuccess("Using replica mode for foreign key handling")
 	fkm.useReplica = true
 	return nil
 }
@@ -199,7 +192,7 @@ func (fkm *ForeignKeyManager) DisableReplicaMode() error {
 
 	_, err := fkm.db.Exec("SET session_replication_role = default")
 	if err != nil {
-		fkm.logger.logWarn("Failed to restore session_replication_role: %v", err)
+		fkm.logger.LogWarn("Failed to restore session_replication_role: %v", err)
 	}
 	return err
 }
@@ -208,7 +201,7 @@ func (fkm *ForeignKeyManager) DisableReplicaMode() error {
 func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 	// Skip FK management for empty tables that won't be copied
 	if table.RowCount == 0 {
-		fkm.logger.logProgress("Skipping FK management for empty table %s", highlightTableName(table.Schema, table.Name))
+		fkm.logger.LogProgress("Skipping FK management for empty table %s", utils.HighlightTableName(table.Schema, table.Name))
 		return nil
 	}
 
@@ -232,8 +225,8 @@ func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 			// 	highlightTableName(table.Schema, table.Name), highlightNumber(len(relatedFKs)))
 			return nil
 		}
-		fkm.logger.logProgress("Managing %s foreign key constraint(s) for table %s",
-			highlightNumber(len(relatedFKs)), highlightTableName(table.Schema, table.Name))
+		fkm.logger.LogProgress("Managing %s foreign key constraint(s) for table %s",
+			utils.HighlightNumber(len(relatedFKs)), utils.HighlightTableName(table.Schema, table.Name))
 	}
 
 	// Drop the foreign keys if not using replica mode
@@ -281,7 +274,7 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 		return nil
 	}
 
-	fkm.logger.logProgress("Restoring %s foreign key constraint(s) for table %s", highlightNumber(len(toRestore)), highlightTableName(table.Schema, table.Name))
+	fkm.logger.LogProgress("Restoring %s foreign key constraint(s) for table %s", utils.HighlightNumber(len(toRestore)), utils.HighlightTableName(table.Schema, table.Name))
 
 	// Sort by dependency order
 	sortedKeys := fkm.sortKeysByDependency(toRestore)
@@ -296,15 +289,15 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 
 		// Skip if already restored
 		if !wasProcessed {
-			fkm.logger.logWarn("FK %s on %s was not in dropped list", highlightFKName(fk.ConstraintName), highlightTableName(fk.Schema, fk.Table))
+			fkm.logger.LogWarn("FK %s on %s was not in dropped list", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table))
 			continue
 		}
 
-		fkm.logger.logProgress("Restoring FK constraint %s on %s", highlightFKName(fk.ConstraintName), highlightTableName(fk.Schema, fk.Table))
+		fkm.logger.LogProgress("Restoring FK constraint %s on %s", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table))
 
 		_, err := fkm.db.Exec(fk.Definition)
 		if err != nil {
-			fkm.logger.logWarn("Failed to restore FK %s on %s: %v", highlightFKName(fk.ConstraintName), highlightTableName(fk.Schema, fk.Table), err)
+			fkm.logger.LogWarn("Failed to restore FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), err)
 			// Keep it in the dropped list for later retry
 			remaining = append(remaining, fk)
 		} else {
@@ -323,12 +316,12 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 
 	// Update backup file snapshot
 	if backupErr := fkm.writeBackupSnapshot(); backupErr != nil {
-		fkm.logger.logWarn("Failed to update FK backup file: %v", backupErr)
+		fkm.logger.LogWarn("Failed to update FK backup file: %v", backupErr)
 	}
 
 	if restored > 0 {
-		fkm.logger.logSuccess("Successfully restored %s/%s foreign key constraints for table %s",
-			highlightNumber(restored), highlightNumber(len(toRestore)), highlightTableName(table.Schema, table.Name))
+		fkm.logger.LogSuccess("Successfully restored %s/%s foreign key constraints for table %s",
+			utils.HighlightNumber(restored), utils.HighlightNumber(len(toRestore)), utils.HighlightTableName(table.Schema, table.Name))
 	}
 
 	return nil
@@ -358,7 +351,7 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 	query := fmt.Sprintf("ALTER TABLE \"%s\".\"%s\" DROP CONSTRAINT IF EXISTS \"%s\"",
 		fk.Schema, fk.Table, fk.ConstraintName)
 
-	fkm.logger.logProgress("Dropping FK constraint %s on %s", highlightFKName(fk.ConstraintName), highlightTableName(fk.Schema, fk.Table))
+	fkm.logger.LogProgress("Dropping FK constraint %s on %s", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table))
 
 	// Release lock temporarily for database operation
 	fkm.mu.Unlock()
@@ -381,7 +374,7 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 	backupErr := fkm.writeBackupSnapshot()
 	fkm.mu.Lock()
 	if backupErr != nil {
-		fkm.logger.logWarn("Failed to update FK backup file: %v", backupErr)
+		fkm.logger.LogWarn("Failed to update FK backup file: %v", backupErr)
 	}
 
 	return nil
@@ -507,7 +500,7 @@ func (fkm *ForeignKeyManager) CleanupBackupFile() error {
 		return nil // File doesn't exist
 	}
 
-	fkm.logger.logSuccess("All foreign keys restored successfully, cleaning up backup file: %s", fkm.backupFile)
+	fkm.logger.LogSuccess("All foreign keys restored successfully, cleaning up backup file: %s", fkm.backupFile)
 	return os.Remove(fkm.backupFile)
 }
 
@@ -522,7 +515,7 @@ func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
 		return nil // No backup file to recover from
 	}
 
-	fkm.logger.logProgress("Found FK backup file, attempting to recover any untracked foreign keys...")
+	fkm.logger.LogProgress("Found FK backup file, attempting to recover any untracked foreign keys...")
 
 	// Try to execute the backup file to restore any remaining FKs
 	content, err := os.ReadFile(fkm.backupFile)
@@ -551,17 +544,17 @@ func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
 				// Ignore "already exists" errors, but log others
 				if !strings.Contains(err.Error(), "already exists") {
 					errors = append(errors, fmt.Errorf("failed to restore FK from backup: %w", err))
-					fkm.logger.logWarn("Failed to restore FK from backup: %v", err)
+					fkm.logger.LogWarn("Failed to restore FK from backup: %v", err)
 				}
 			} else {
 				restored++
-				fkm.logger.logSuccess("Successfully restored FK from backup file")
+				fkm.logger.LogSuccess("Successfully restored FK from backup file")
 			}
 		}
 	}
 
 	if restored > 0 {
-		fkm.logger.logSuccess("Recovered %s foreign key constraints from backup file", highlightNumber(restored))
+		fkm.logger.LogSuccess("Recovered %s foreign key constraints from backup file", utils.HighlightNumber(restored))
 	}
 
 	if len(errors) > 0 {

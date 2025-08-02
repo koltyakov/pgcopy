@@ -7,27 +7,9 @@ import (
 	"time"
 
 	"github.com/koltyakov/pgcopy/internal/copier"
+	"github.com/koltyakov/pgcopy/internal/utils"
 	"github.com/spf13/cobra"
 )
-
-// formatDuration formats a duration without decimal parts
-func formatDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		minutes := int(d.Minutes())
-		seconds := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm%ds", minutes, seconds)
-	}
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-	seconds := int(d.Seconds()) % 60
-	return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
-}
 
 // copyCmd represents the copy command
 var copyCmd = &cobra.Command{
@@ -74,7 +56,7 @@ Examples:
 
 		if err := copier.ValidateConfig(config); err != nil {
 			duration := time.Since(start)
-			log.Fatalf("Configuration error after %s: %v", formatDuration(duration), err)
+			log.Fatalf("Configuration error after %s: %v", utils.FormatDuration(duration), err)
 		}
 
 		fmt.Printf("Starting data copy operation...\n")
@@ -82,13 +64,13 @@ Examples:
 		dataCopier, err := copier.New(config)
 		if err != nil {
 			duration := time.Since(start)
-			log.Fatalf("Failed to initialize copier after %s: %v", formatDuration(duration), err)
+			log.Fatalf("Failed to initialize copier after %s: %v", utils.FormatDuration(duration), err)
 		}
 		defer dataCopier.Close()
 
 		if err := dataCopier.Copy(); err != nil {
 			duration := time.Since(start)
-			log.Fatalf("Copy operation failed after %s: %v", formatDuration(duration), err)
+			log.Fatalf("Copy operation failed after %s: %v", utils.FormatDuration(duration), err)
 		}
 	},
 }

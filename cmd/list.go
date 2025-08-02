@@ -8,32 +8,10 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/koltyakov/pgcopy/internal/utils"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/spf13/cobra"
 )
-
-// formatNumber formats large numbers with K/M suffixes (same as in copy.go)
-func formatNumberList(n int64) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 1000000 {
-		if n%1000 == 0 {
-			return fmt.Sprintf("%dK", n/1000)
-		}
-		return fmt.Sprintf("%.1fK", float64(n)/1000)
-	}
-	if n < 1000000000 {
-		if n%1000000 == 0 {
-			return fmt.Sprintf("%dM", n/1000000)
-		}
-		return fmt.Sprintf("%.1fM", float64(n)/1000000)
-	}
-	if n%1000000000 == 0 {
-		return fmt.Sprintf("%dB", n/1000000000)
-	}
-	return fmt.Sprintf("%.1fB", float64(n)/1000000000)
-}
 
 // listCmd represents the list command
 var listCmd = &cobra.Command{
@@ -99,12 +77,12 @@ Examples:
 		var totalRows int64
 		for _, table := range tables {
 			_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-				table.Schema, table.Name, formatNumberList(table.RowCount), table.Size)
+				table.Schema, table.Name, utils.FormatNumber(table.RowCount), table.Size)
 			totalRows += table.RowCount
 		}
 
 		_, _ = fmt.Fprintln(w, "------\t-----\t---------\t----")
-		_, _ = fmt.Fprintf(w, "TOTAL\t%d tables\t%s rows\t\n", len(tables), formatNumberList(totalRows))
+		_, _ = fmt.Fprintf(w, "TOTAL\t%d tables\t%s rows\t\n", len(tables), utils.FormatNumber(totalRows))
 		_ = w.Flush()
 	},
 }

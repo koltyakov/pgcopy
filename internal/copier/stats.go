@@ -3,6 +3,8 @@ package copier
 import (
 	"fmt"
 	"time"
+
+	"github.com/koltyakov/pgcopy/internal/utils"
 )
 
 // printStats prints final copy statistics
@@ -28,7 +30,7 @@ func (c *Copier) printStats() {
 	}
 	fmt.Printf("║  📊 %-*s  %*d  ║\n", maxLabelWidth, "Rows Copied:", maxValueWidth, c.stats.RowsCopied)
 	fmt.Printf("║  ⏱️  %-*s  %*s  ║\n", maxLabelWidth, "Duration:", maxValueWidth,
-		formatDuration(duration))
+		utils.FormatDuration(duration))
 
 	if c.stats.RowsCopied > 0 && duration.Seconds() > 0 {
 		rowsPerSecond := float64(c.stats.RowsCopied) / duration.Seconds()
