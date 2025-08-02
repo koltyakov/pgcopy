@@ -39,7 +39,9 @@ Examples:
   pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --dest "postgres://user:pass@localhost:5433/destdb"
   pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
   pgcopy copy --source-file source.conn --dest-file dest.conn --batch-size 5000
-  pgcopy copy --source-file source.conn --dest-file dest.conn --no-progress  # Disable progress for CI`,
+  pgcopy copy --source-file source.conn --dest-file dest.conn --no-progress  # Disable progress for CI
+  pgcopy copy -s "..." -d "..." --exclude-tables "temp_*,*_logs,*_cache"     # Exclude with wildcards
+  pgcopy copy -s "..." -d "..." --include-tables "user_*,order_*"           # Include with wildcards`,
 	Run: func(cmd *cobra.Command, args []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		destConn, _ := cmd.Flags().GetString("dest")
@@ -99,8 +101,8 @@ func init() {
 	copyCmd.Flags().String("dest-file", "", "Destination database connection config file")
 	copyCmd.Flags().IntP("parallel", "p", 4, "Number of parallel workers")
 	copyCmd.Flags().Int("batch-size", 1000, "Batch size for data copying")
-	copyCmd.Flags().StringSlice("exclude-tables", []string{}, "Tables to exclude from copying")
-	copyCmd.Flags().StringSlice("include-tables", []string{}, "Tables to include in copying (if specified, only these tables will be copied)")
+	copyCmd.Flags().StringSlice("exclude-tables", []string{}, "Tables to exclude from copying (supports wildcards: temp_*,*_logs)")
+	copyCmd.Flags().StringSlice("include-tables", []string{}, "Tables to include in copying (supports wildcards: user_*,*_data)")
 	copyCmd.Flags().Bool("resume", false, "Resume from previous incomplete copy")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("no-progress", false, "Disable progress bar (useful for CI/headless environments)")

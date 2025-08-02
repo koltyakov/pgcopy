@@ -10,12 +10,12 @@
 
 **pgcopy** is specifically designed for **casual data synchronization** scenarios where you need to copy data between PostgreSQL databases with identical schemas. It's particularly valuable when:
 
-- **pg_restore is too slow or doesn't work for your use case**
-- **You don't have superuser permissions** but need to handle foreign key constraints
-- **You're dealing with complex foreign key relationships** including circular dependencies
-- **You need parallel processing** for better performance than traditional dump/restore
-- **You want data-only synchronization** without schema changes
-- **You're working in development/staging environments** and need frequent data refreshes
+- pg_restore is too slow or doesn't work for your use case
+- You don't have superuser permissions but need to handle foreign key constraints
+- You're dealing with complex foreign key relationships including circular dependencies
+- You need parallel processing for better performance than traditional dump/restore
+- You want data-only synchronization without schema changes
+- You're working in development/staging environments and need frequent data refreshes
 
 ### What pgcopy is NOT
 
@@ -62,7 +62,8 @@
 3. **Subset Data Synchronization**
    ```bash
    # Sync only specific tables
-   pgcopy copy --source-file prod.conn --dest-file dev.conn --include-tables "users,orders,products"
+   pgcopy copy --source-file prod.conn --dest-file dev.conn \
+     --include-tables "public.users,public.orders,public.products"
    ```
 
 4. **Cross-Cloud Data Transfer**
@@ -134,9 +135,41 @@ pgcopy copy \
   --dest "postgres://user:pass@localhost:5433/destdb" \
   --parallel 8 \
   --batch-size 5000 \
-  --exclude-tables "logs,temp_data" \
+  --exclude-tables "logs,temp_*,*_cache" \
   --include-tables "users,orders,products"
 ```
+
+### Table Filtering with Wildcards
+
+Both `--exclude-tables` and `--include-tables` support wildcard patterns for flexible table selection:
+
+```bash
+# Exclude all temporary tables and logs
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb" \
+  --exclude-tables "temp_*,*_logs,*_cache,session_*"
+
+# Include only specific patterns
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb" \
+  --include-tables "user_*,order_*,product_*"
+
+# Mix exact names and patterns
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb" \
+  --include-tables "users,profiles,*_settings,config_*"
+```
+
+**Supported wildcard patterns:**
+
+- `*` - Matches any sequence of characters
+- `temp_*` - Matches tables starting with "temp_"
+- `*_logs` - Matches tables ending with "_logs"
+- `*cache*` - Matches tables containing "cache"
+- `test_*_data` - Matches tables like "test_user_data", "test_order_data"
 
 ### Progress Bar Mode
 
@@ -185,8 +218,8 @@ Copy data from source to destination database.
 - `--dest-file`: Destination database connection config file
 - `--parallel, -p`: Number of parallel workers (default: 4)
 - `--batch-size`: Batch size for data copying (default: 1000)
-- `--exclude-tables`: Tables to exclude from copying (comma-separated)
-- `--include-tables`: Tables to include in copying (comma-separated)
+- `--exclude-tables`: Tables to exclude from copying (comma-separated, supports wildcards: `temp_*,*_logs`)
+- `--include-tables`: Tables to include in copying (comma-separated, supports wildcards: `user_*,*_data`)
 - `--resume`: Resume from previous incomplete copy
 - `--dry-run`: Show what would be copied without actually copying
 - `--no-progress`: Disable progress bar (useful for CI/headless environments)
@@ -252,11 +285,11 @@ When copying data between PostgreSQL databases with foreign key constraints, you
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ 1. Scan all tables for foreign key constraints             │
-│ 2. Try replica mode (if superuser available)               │
-│ 3. Fall back to smart FK dropping (non-superuser)          │
-│ 4. Copy data in parallel (constraints disabled)            │
-│ 5. Restore all constraints with original definitions       │
+│ 1. Scan all tables for foreign key constraints              │
+│ 2. Try replica mode (if superuser available)                │
+│ 3. Fall back to smart FK dropping (non-superuser)           │
+│ 4. Copy data in parallel (constraints disabled)             │
+│ 5. Restore all constraints with original definitions        │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -435,6 +468,22 @@ pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
   --dest "postgres://user:pass@dest:5432/db" \
   --exclude-tables "logs,sessions,temp_cache"
+```
+
+### Wildcard-based Filtering
+
+```bash
+# Exclude all temporary and log tables
+pgcopy copy \
+  --source "postgres://user:pass@source:5432/db" \
+  --dest "postgres://user:pass@dest:5432/db" \
+  --exclude-tables "temp_*,*_logs,*_cache"
+
+# Include only user-related tables
+pgcopy copy \
+  --source "postgres://user:pass@source:5432/db" \
+  --dest "postgres://user:pass@dest:5432/db" \
+  --include-tables "user_*,*_users,customer_*"
 ```
 
 ## Building from Source

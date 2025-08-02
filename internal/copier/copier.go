@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -302,14 +303,33 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 }
 
 // shouldSkipTable determines if a table should be skipped based on include/exclude lists
+// Supports wildcard patterns using * for any sequence of characters
 func (c *Copier) shouldSkipTable(schema, table string) bool {
 	fullName := fmt.Sprintf("%s.%s", schema, table)
 
 	// If include list is specified, only include tables in the list
 	if len(c.config.IncludeTables) > 0 {
 		found := false
-		for _, includeTable := range c.config.IncludeTables {
-			if includeTable == table || includeTable == fullName {
+		for _, includePattern := range c.config.IncludeTables {
+			includePattern = strings.TrimSpace(includePattern)
+			if includePattern == "" {
+				continue
+			}
+
+			// Check exact match first
+			if includePattern == table || includePattern == fullName {
+				found = true
+				break
+			}
+
+			// Check wildcard pattern match for table name
+			if matchesPattern(table, includePattern) {
+				found = true
+				break
+			}
+
+			// Check wildcard pattern match for full name (schema.table)
+			if matchesPattern(fullName, includePattern) {
 				found = true
 				break
 			}
@@ -320,8 +340,24 @@ func (c *Copier) shouldSkipTable(schema, table string) bool {
 	}
 
 	// Check exclude list
-	for _, excludeTable := range c.config.ExcludeTables {
-		if excludeTable == table || excludeTable == fullName {
+	for _, excludePattern := range c.config.ExcludeTables {
+		excludePattern = strings.TrimSpace(excludePattern)
+		if excludePattern == "" {
+			continue
+		}
+
+		// Check exact match first
+		if excludePattern == table || excludePattern == fullName {
+			return true
+		}
+
+		// Check wildcard pattern match for table name
+		if matchesPattern(table, excludePattern) {
+			return true
+		}
+
+		// Check wildcard pattern match for full name (schema.table)
+		if matchesPattern(fullName, excludePattern) {
 			return true
 		}
 	}
