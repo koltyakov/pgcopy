@@ -45,6 +45,7 @@ Successfully implemented `pgcopy`, a high-performance Go CLI tool for efficientl
 ## Architecture
 
 ### Project Structure
+
 ```
 pgcopy/
 ├── main.go                    # Application entry point
@@ -52,19 +53,18 @@ pgcopy/
 ├── Makefile                   # Build automation
 ├── README.md                  # Comprehensive documentation
 ├── cmd/                       # CLI commands
-│   ├── root.go               # Root command setup
-│   ├── copy.go               # Copy command implementation
-│   ├── list.go               # List command implementation
-│   └── version.go            # Version command
-├── internal/copier/           # Core copying logic
-│   ├── copier.go             # Main copier implementation
-│   ├── parallel.go           # Parallel processing logic
-│   └── copier_test.go        # Unit tests
+│   ├── root.go                # Root command setup
+│   ├── copy.go                # Copy command implementation
+│   ├── list.go                # List command implementation
+│   ├── version.go             # Version command
+│   └── help.go                # Help command
+├── internal/                  # Internal packages
 ├── examples/                  # Configuration examples
-│   ├── source.conf           # Source DB config example
-│   ├── dest.conf             # Destination DB config example
-│   └── copy-prod-to-staging.sh # Usage example script
-└── bin/                      # Compiled binaries
+│   ├── db1.conn               # Source DB config example
+│   ├── db2.conn               # Destination DB config example
+│   ├── Docker.md              # Docker usage example
+│   └── pgcopy.sh              # Usage example script
+└── bin/                       # Compiled binaries
 ```
 
 ### Key Components

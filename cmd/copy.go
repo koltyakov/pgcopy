@@ -38,8 +38,8 @@ Both databases must have the same schema structure. Progress bar is enabled by d
 Examples:
   pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --dest "postgres://user:pass@localhost:5433/destdb"
   pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
-  pgcopy copy --source-file source.conf --dest-file dest.conf --batch-size 5000
-  pgcopy copy --source-file source.conf --dest-file dest.conf --no-progress  # Disable progress for CI`,
+  pgcopy copy --source-file source.conn --dest-file dest.conn --batch-size 5000
+  pgcopy copy --source-file source.conn --dest-file dest.conn --no-progress  # Disable progress for CI`,
 	Run: func(cmd *cobra.Command, args []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		destConn, _ := cmd.Flags().GetString("dest")

@@ -23,8 +23,8 @@ func TestConfig_Validate(t *testing.T) {
 		{
 			name: "valid config with files",
 			config: &Config{
-				SourceFile: "source.conf",
-				DestFile:   "dest.conf",
+				SourceFile: "source.conn",
+				DestFile:   "dest.conn",
 				Parallel:   2,
 				BatchSize:  500,
 			},
