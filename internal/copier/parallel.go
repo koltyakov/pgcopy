@@ -57,7 +57,7 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 
 	for table := range tableChan {
 		if err := c.copyTable(table); err != nil {
-			c.logf("Error copying table %s.%s: %v", table.Schema, table.Name, err)
+			c.logError("Error copying table %s: %v", highlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
 		} else {
 			c.mu.Lock()
@@ -78,11 +78,11 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	startTime := time.Now()
 
 	if table.RowCount == 0 {
-		c.logf("Skipping empty table %s.%s", table.Schema, table.Name)
+		c.logProgress("Skipping empty table %s", highlightTableName(table.Schema, table.Name))
 		return nil
 	}
 
-	c.logf("Copying table %s.%s (%s rows)", table.Schema, table.Name, formatNumber(table.RowCount))
+	c.logProgress("Copying table %s (%s rows)", highlightTableName(table.Schema, table.Name), highlightNumber(formatNumber(table.RowCount)))
 
 	// Drop foreign keys for this table if not using replica mode
 	if err := c.fkManager.DropForeignKeysForTable(table); err != nil {
@@ -103,11 +103,11 @@ func (c *Copier) copyTable(table *TableInfo) error {
 
 	// Restore foreign keys for this table immediately after copying
 	if restoreErr := c.fkManager.RestoreForeignKeysForTable(table); restoreErr != nil {
-		c.logf("Warning: failed to restore foreign keys for table %s.%s: %v", table.Schema, table.Name, restoreErr)
+		c.logWarn("Failed to restore foreign keys for %s: %v", highlightTableName(table.Schema, table.Name), restoreErr)
 	}
 
 	duration := time.Since(startTime)
-	c.logf("Completed copying table %s.%s (%s rows) in %s", table.Schema, table.Name, formatNumber(table.RowCount), formatDuration(duration))
+	c.logSuccess("Completed copying %s (%s rows) in %s", highlightTableName(table.Schema, table.Name), highlightNumber(formatNumber(table.RowCount)), colorize(ColorDim, formatDuration(duration)))
 	return nil
 }
 

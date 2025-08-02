@@ -13,48 +13,6 @@ import (
 	"github.com/schollz/progressbar/v3"
 )
 
-// formatDuration formats a duration without decimal parts
-func formatDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	if d < time.Minute {
-		return fmt.Sprintf("%ds", int(d.Seconds()))
-	}
-	if d < time.Hour {
-		minutes := int(d.Minutes())
-		seconds := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm%ds", minutes, seconds)
-	}
-	hours := int(d.Hours())
-	minutes := int(d.Minutes()) % 60
-	seconds := int(d.Seconds()) % 60
-	return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
-}
-
-// formatNumber formats large numbers with K/M suffixes
-func formatNumber(n int64) string {
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
-	}
-	if n < 1000000 {
-		if n%1000 == 0 {
-			return fmt.Sprintf("%dK", n/1000)
-		}
-		return fmt.Sprintf("%.1fK", float64(n)/1000)
-	}
-	if n < 1000000000 {
-		if n%1000000 == 0 {
-			return fmt.Sprintf("%dM", n/1000000)
-		}
-		return fmt.Sprintf("%.1fM", float64(n)/1000000)
-	}
-	if n%1000000000 == 0 {
-		return fmt.Sprintf("%dB", n/1000000000)
-	}
-	return fmt.Sprintf("%.1fB", float64(n)/1000000000)
-}
-
 // progressBarWriter is a custom writer that ensures log messages
 // appear below the progress bar without interfering with it
 type progressBarWriter struct {
@@ -179,7 +137,7 @@ func New(config *Config) (*Copier, error) {
 	c.destDB.SetConnMaxLifetime(time.Hour)
 
 	// Initialize foreign key manager
-	c.fkManager = NewForeignKeyManager(c.destDB)
+	c.fkManager = NewForeignKeyManager(c.destDB, c)
 
 	return c, nil
 }
@@ -212,7 +170,7 @@ func (c *Copier) Copy() error {
 	// Calculate total rows for progress tracking
 	totalRows, err := c.calculateTotalRows(tables)
 	if err != nil {
-		c.logf("Warning: failed to calculate total rows: %v", err)
+		c.logWarn("Failed to calculate total rows: %v", err)
 		totalRows = 0
 	}
 	c.stats.TotalRows = totalRows
@@ -271,12 +229,12 @@ func (c *Copier) Copy() error {
 
 	// Try to recover any remaining FKs from backup file before cleanup
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
-		c.logf("Warning: failed to recover FKs from backup file: %v", recoveryErr)
+		c.logWarn("Failed to recover FKs from backup file: %v", recoveryErr)
 	}
 
 	// Clean up backup file on successful completion
 	if cleanupErr := c.fkManager.CleanupBackupFile(); cleanupErr != nil {
-		c.logf("Warning: failed to cleanup FK backup file: %v", cleanupErr)
+		c.logWarn("Failed to cleanup FK backup file: %v", cleanupErr)
 	}
 
 	// Finish progress bar if enabled
@@ -333,7 +291,7 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 
 		// Get column information
 		if err := c.getTableColumns(tableInfo); err != nil {
-			c.logf("Warning: failed to get columns for %s.%s: %v", schema, name, err)
+			c.logWarn("Failed to get columns for %s: %v", highlightTableName(schema, name), err)
 			continue
 		}
 
@@ -473,76 +431,6 @@ func readConnectionFromFile(filename string) (string, error) {
 	}
 
 	return string(content), nil
-}
-
-// printStats prints final copy statistics
-func (c *Copier) printStats() {
-	duration := time.Since(c.stats.StartTime)
-
-	// Create a beautiful table for the statistics
-	fmt.Printf("\n")
-	fmt.Printf("╔══════════════════════════════════════════════════════════════╗\n")
-	fmt.Printf("║                        📊 COPY STATISTICS                    ║\n")
-	fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
-
-	// Calculate column widths for proper alignment
-	maxLabelWidth := 18
-	maxValueWidth := 35
-
-	// Main statistics
-	if c.stats.TablesProcessed == c.stats.TotalTables {
-		fmt.Printf("║  📋 %-*s  %*d  ║\n", maxLabelWidth, "Tables Processed:", maxValueWidth, c.stats.TablesProcessed)
-	} else {
-		fmt.Printf("║  📋 %-*s  %*s  ║\n", maxLabelWidth, "Tables Processed:", maxValueWidth,
-			fmt.Sprintf("%d / %d", c.stats.TablesProcessed, c.stats.TotalTables))
-	}
-	fmt.Printf("║  📊 %-*s  %*d  ║\n", maxLabelWidth, "Rows Copied:", maxValueWidth, c.stats.RowsCopied)
-	fmt.Printf("║  ⏱️  %-*s  %*s  ║\n", maxLabelWidth, "Duration:", maxValueWidth,
-		formatDuration(duration))
-
-	if c.stats.RowsCopied > 0 && duration.Seconds() > 0 {
-		rowsPerSecond := float64(c.stats.RowsCopied) / duration.Seconds()
-		fmt.Printf("║  🚀 %-*s  %*s  ║\n", maxLabelWidth, "Average Speed:", maxValueWidth,
-			fmt.Sprintf("%d rows/s", int(rowsPerSecond)))
-	}
-
-	// Foreign key statistics
-	if c.fkManager != nil {
-		total, dropped := c.fkManager.GetForeignKeyStats()
-		if dropped > 0 {
-			fmt.Printf("║  🔗 %-*s  %*s  ║\n", maxLabelWidth, "Foreign Keys:", maxValueWidth,
-				fmt.Sprintf("%d detected, %d dropped", total, dropped))
-		}
-	}
-
-	// Errors section (if any)
-	if len(c.stats.Errors) > 0 {
-		fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
-		fmt.Printf("║                          ⚠️  ERRORS                          ║\n")
-		fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
-
-		for i, err := range c.stats.Errors {
-			errorText := err.Error()
-			// Truncate long error messages
-			if len(errorText) > 55 {
-				errorText = errorText[:52] + "..."
-			}
-			fmt.Printf("║  %d. %-55s ║\n", i+1, errorText)
-		}
-	}
-
-	fmt.Printf("╚══════════════════════════════════════════════════════════════╝\n")
-	fmt.Printf("\n")
-}
-
-// logf logs a message using the custom logger when progress bar is active,
-// or the standard logger otherwise
-func (c *Copier) logf(format string, args ...interface{}) {
-	if c.logger != nil {
-		c.logger.Printf(format, args...)
-	} else {
-		log.Printf(format, args...)
-	}
 }
 
 // updateProgress prints progress updates periodically
