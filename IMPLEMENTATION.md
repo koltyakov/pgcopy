@@ -24,7 +24,7 @@ Successfully implemented `pgcopy`, a high-performance Go CLI tool for efficientl
 
 - Connection Strings: Direct PostgreSQL connection string support
 - Configuration Files: External config file support for credentials
-- Table Filtering: Include/exclude specific tables or schemas
+- Table Filtering: Include/exclude specific tables or schemas with wildcard support (`temp_*`, `*_logs`)
 - Flexible Parameters: Configurable parallel workers and batch sizes
 
 ### 🔗 Advanced Foreign Key Management
@@ -179,14 +179,27 @@ pgcopy copy \
 ### Build System
 
 - Makefile: Automated build process
+- GoReleaser: Automated cross-platform builds and releases
+- GitHub Actions: Continuous Integration and automated releases
 - Cross-Platform: Support for multiple platforms (Linux, macOS, Windows)
 - Dependency Management: Go modules for dependency management
+
+### Release Automation
+
+- Automated Releases: GitHub Actions workflow for tag-based releases
+- Multi-Platform Builds: Linux, macOS, Windows binaries
+- Docker Images: Automated Docker image builds and publishing
+- Homebrew: Automated Homebrew formula updates
+- Security: Cosign signing for release artifacts
+- Checksums: Automated checksum generation for all releases
 
 ### Code Quality
 
 - Error Handling: Comprehensive error handling throughout
 - Logging: Structured logging for debugging and monitoring
 - Documentation: Extensive inline documentation and README
+- Linting: golangci-lint for code quality enforcement
+- Security Scanning: Gosec security analysis
 
 ## Dependencies
 
@@ -202,6 +215,16 @@ pgcopy copy \
 - Go 1.21+: Modern Go version
 - Make: Build automation
 - Git: Version control
+- GoReleaser: Cross-platform build and release automation
+- GitHub Actions: CI/CD pipeline
+- golangci-lint: Code quality and style enforcement
+
+### Release Infrastructure
+
+- GitHub Releases: Automated release creation with changelogs
+- Docker Hub: Container image publishing
+- Homebrew: Package manager integration
+- Multi-platform binaries: Linux, macOS, Windows support
 
 ## Installation & Deployment
 
@@ -219,11 +242,29 @@ make build
 make install  # Installs to /usr/local/bin/
 ```
 
+### Package Managers
+
+### GitHub Releases
+
+Pre-built binaries are available for download from [GitHub Releases](https://github.com/koltyakov/pgcopy/releases) for:
+- Linux (amd64, arm64)
+- macOS (amd64, arm64) 
+- Windows (amd64)
+
 ### Cross-Platform Builds
 
 ```bash
 make build-all  # Builds for Linux, macOS, Windows
 ```
+
+### Release Process
+
+Releases are automated via GitHub Actions:
+
+1. Tag Creation: Push a version tag (e.g., `v1.0.0`)
+2. Automated Build: GitHub Actions triggers GoReleaser
+3. Multi-Platform: Builds for all supported platforms
+4. Release Creation: Creates GitHub release with changelog
 
 ## Future Enhancements
 

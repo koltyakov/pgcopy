@@ -1,0 +1,94 @@
+# GoReleaser configuration for pgcopy
+version: 2
+
+# Build configuration
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+
+builds:
+  - id: pgcopy
+    main: ./main.go
+    binary: pgcopy
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+# Archive configuration
+archives:
+  - id: default
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - README.md
+      - LICENSE
+      - example/**/*
+
+# Checksum configuration
+checksum:
+  name_template: 'checksums.txt'
+
+# Snapshot configuration
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+# Changelog configuration
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+  groups:
+    - title: Features
+      regexp: '^.*?(feat|feature)(\(.+\))??!?:.+$'
+      order: 0
+    - title: 'Bug fixes'
+      regexp: '^.*?(fix|bug)(\(.+\))??!?:.+$'
+      order: 1
+    - title: Others
+      order: 999
+
+# Docker configuration
+dockers:
+  - image_templates:
+      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:latest"
+      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:{{ .Tag }}"
+      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:v{{ .Major }}"
+      - "ghcr.io/{{.Env.GITHUB_REPOSITORY_OWNER}}/pgcopy:v{{ .Major }}.{{ .Minor }}"
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--pull"
+      - "--label=org.opencontainers.image.created={{.Date}}"
+      - "--label=org.opencontainers.image.title={{.ProjectName}}"
+      - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+      - "--label=org.opencontainers.image.version={{.Version}}"
+      - "--label=org.opencontainers.image.source=https://github.com/{{.Env.GITHUB_REPOSITORY}}"
+    extra_files:
+      - README.md
+      - LICENSE
+
+# Release configuration
+release:
+  draft: false
+  prerelease: auto
