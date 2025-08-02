@@ -57,6 +57,8 @@ type Copier struct {
 	lastUpdate  time.Time
 	progressBar *progressbar.ProgressBar
 	logger      *log.Logger
+	fileLogger  *log.Logger // Logger for copy.log file
+	logFile     *os.File    // File handle for copy.log
 }
 
 // CopyStats tracks copying statistics
@@ -140,6 +142,11 @@ func New(config *Config) (*Copier, error) {
 	// Initialize foreign key manager
 	c.fkManager = NewForeignKeyManager(c.destDB, c)
 
+	// Initialize file logger for copy.log
+	if err := c.initFileLogger(); err != nil {
+		return nil, fmt.Errorf("failed to initialize file logger: %w", err)
+	}
+
 	return c, nil
 }
 
@@ -153,6 +160,12 @@ func (c *Copier) Close() {
 	if c.destDB != nil {
 		if err := c.destDB.Close(); err != nil {
 			c.logError("Failed to close destination database connection: %v", err)
+		}
+	}
+	if c.logFile != nil {
+		if err := c.logFile.Close(); err != nil {
+			// Can't use c.logError here since we're closing the log file
+			fmt.Fprintf(os.Stderr, "Failed to close copy.log file: %v\n", err)
 		}
 	}
 }
@@ -175,6 +188,12 @@ func (c *Copier) Copy() error {
 	// Calculate total rows for progress tracking
 	totalRows := c.calculateTotalRows(tables)
 	c.stats.TotalRows = totalRows
+
+	// Log the start of copy operation
+	if c.fileLogger != nil {
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		c.fileLogger.Printf("%s | COPY_START | %d tables | %d total rows", timestamp, len(tables), totalRows)
+	}
 
 	if c.config.DryRun {
 		return c.dryRun(tables)
@@ -248,6 +267,14 @@ func (c *Copier) Copy() error {
 
 	// Print final statistics
 	c.printStats()
+
+	// Log the completion of copy operation
+	if c.fileLogger != nil {
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		totalDuration := time.Since(c.stats.StartTime)
+		c.fileLogger.Printf("%s | COPY_COMPLETE | %d tables | %d rows | %s",
+			timestamp, c.stats.TablesProcessed, c.stats.RowsCopied, c.formatLogDuration(totalDuration))
+	}
 
 	return nil
 }
@@ -560,4 +587,51 @@ func checkForFKBackupFile() error {
 	}
 
 	return nil
+}
+
+// initFileLogger initializes the file logger for copy.log
+func (c *Copier) initFileLogger() error {
+	var err error
+	c.logFile, err = os.OpenFile("copy.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open copy.log file: %w", err)
+	}
+
+	c.fileLogger = log.New(c.logFile, "", 0) // No prefix, we'll format our own timestamps
+	return nil
+}
+
+// logTableCopy logs table copy operation to the copy.log file
+func (c *Copier) logTableCopy(tableName string, rowCount int64, duration time.Duration) {
+	if c.fileLogger != nil {
+		timestamp := time.Now().Format("2006-01-02 15:04:05")
+		c.fileLogger.Printf("%s | %s | %d rows | %s", timestamp, tableName, rowCount, c.formatLogDuration(duration))
+	}
+}
+
+// formatLogDuration formats duration for log files with rounded values
+func (c *Copier) formatLogDuration(d time.Duration) string {
+	if d < time.Second {
+		// Round to nearest millisecond
+		ms := d.Round(time.Millisecond)
+		return fmt.Sprintf("%dms", ms.Milliseconds())
+	}
+	if d < time.Minute {
+		// Round to nearest 100ms for seconds
+		rounded := d.Round(100 * time.Millisecond)
+		return fmt.Sprintf("%.1fs", rounded.Seconds())
+	}
+	if d < time.Hour {
+		// Round to nearest second for minutes
+		rounded := d.Round(time.Second)
+		minutes := int(rounded.Minutes())
+		seconds := int(rounded.Seconds()) % 60
+		return fmt.Sprintf("%dm%ds", minutes, seconds)
+	}
+	// Round to nearest second for hours
+	rounded := d.Round(time.Second)
+	hours := int(rounded.Hours())
+	minutes := int(rounded.Minutes()) % 60
+	seconds := int(rounded.Seconds()) % 60
+	return fmt.Sprintf("%dh%dm%ds", hours, minutes, seconds)
 }

@@ -107,6 +107,11 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	}
 
 	duration := time.Since(startTime)
+
+	// Log to copy.log file
+	tableFullName := fmt.Sprintf("%s.%s", table.Schema, table.Name)
+	c.logTableCopy(tableFullName, table.RowCount, duration)
+
 	c.logSuccess("Completed copying %s (%s rows) in %s", highlightTableName(table.Schema, table.Name), highlightNumber(formatNumber(table.RowCount)), colorize(ColorDim, formatDuration(duration)))
 	return nil
 }
