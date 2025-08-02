@@ -544,8 +544,8 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 			c.lastUpdate = now
 			percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
 			if c.stats.TotalRows > 0 {
-				fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d tables processed\n",
-					utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed)
+				fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d/%d tables processed\n",
+					utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed, c.stats.TotalTables)
 			}
 		}
 	}
