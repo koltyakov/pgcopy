@@ -16,16 +16,17 @@ var copyCmd = &cobra.Command{
 	Use:   "copy",
 	Short: "Copy data from source to destination database",
 	Long: `Copy data from source PostgreSQL database to destination PostgreSQL database.
-Both databases must have the same schema structure. Progress bar is enabled by default.
+Both databases must have the same schema structure.
 
 Examples:
   pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --dest "postgres://user:pass@localhost:5433/destdb"
   pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
   pgcopy copy --source-file source.conn --dest-file dest.conn --batch-size 5000
-  pgcopy copy --source-file source.conn --dest-file dest.conn --no-progress  # Disable progress for CI
-  pgcopy copy --source-file source.conn --dest-file dest.conn --interactive  # Interactive mode with live table progress
-  pgcopy copy -s "..." -d "..." --exclude-tables "temp_*,*_logs,*_cache"     # Exclude with wildcards
-  pgcopy copy -s "..." -d "..." --include-tables "user_*,order_*"           # Include with wildcards`,
+  pgcopy copy --source-file source.conn --dest-file dest.conn --output plain       # Plain mode for CI/headless (default)
+  pgcopy copy --source-file source.conn --dest-file dest.conn --output progress    # Progress bar mode
+  pgcopy copy --source-file source.conn --dest-file dest.conn --output interactive # Interactive mode with live table progress
+  pgcopy copy -s "..." -d "..." --exclude-tables "temp_*,*_logs,*_cache"        # Exclude with wildcards
+  pgcopy copy -s "..." -d "..." --include-tables "user_*,order_*"               # Include with wildcards`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		destConn, _ := cmd.Flags().GetString("dest")
@@ -37,8 +38,20 @@ Examples:
 		includeTables, _ := cmd.Flags().GetStringSlice("include-tables")
 		resume, _ := cmd.Flags().GetBool("resume")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
-		noProgress, _ := cmd.Flags().GetBool("no-progress")
-		interactive, _ := cmd.Flags().GetBool("interactive")
+		output, _ := cmd.Flags().GetString("output")
+
+		// Parse display mode
+		var displayMode copier.DisplayMode
+		switch output {
+		case "interactive":
+			displayMode = copier.DisplayModeInteractive
+		case "progress":
+			displayMode = copier.DisplayModeProgress
+		case "plain":
+			displayMode = copier.DisplayModeRaw
+		default:
+			displayMode = copier.DisplayModeRaw // Default to plain mode
+		}
 
 		config := &copier.Config{
 			SourceConn:    sourceConn,
@@ -51,8 +64,7 @@ Examples:
 			IncludeTables: includeTables,
 			Resume:        resume,
 			DryRun:        dryRun,
-			ProgressBar:   !noProgress && !interactive, // Disable progress bar if interactive mode is enabled
-			Interactive:   interactive,
+			Mode:          displayMode,
 		}
 
 		start := time.Now()
@@ -91,6 +103,5 @@ func init() {
 	copyCmd.Flags().StringSlice("include-tables", []string{}, "Tables to include in copying (supports wildcards: user_*,*_data)")
 	copyCmd.Flags().Bool("resume", false, "Resume from previous incomplete copy")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
-	copyCmd.Flags().Bool("no-progress", false, "Disable progress bar (useful for CI/headless environments)")
-	copyCmd.Flags().Bool("interactive", false, "Enable interactive mode with live table progress display")
+	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress)")
 }

@@ -77,7 +77,7 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 			c.mu.Lock()
 			c.stats.TablesProcessed++
 			// Update progress bar description when a table is completed
-			if c.config.ProgressBar && c.progressBar != nil {
+			if c.config.Mode == DisplayModeProgress && c.progressBar != nil {
 				description := fmt.Sprintf("Copying rows (%d/%d tables)",
 					c.stats.TablesProcessed, c.stats.TotalTables)
 				c.progressBar.Describe(description)

@@ -34,6 +34,19 @@ func (w *progressBarWriter) Write(p []byte) (n int, err error) {
 	return os.Stderr.Write(p)
 }
 
+// DisplayMode represents different output modes for progress tracking
+type DisplayMode string
+
+const (
+	// DisplayModeRaw shows minimal output, suitable for headless/CI environments (default)
+	// Note: Internal name remains "raw" for backwards compatibility in code
+	DisplayModeRaw DisplayMode = "raw"
+	// DisplayModeProgress shows a progress bar
+	DisplayModeProgress DisplayMode = "progress"
+	// DisplayModeInteractive shows an interactive live display with table details
+	DisplayModeInteractive DisplayMode = "interactive"
+)
+
 // Config holds the configuration for the data copy operation
 type Config struct {
 	SourceConn    string
@@ -46,8 +59,7 @@ type Config struct {
 	IncludeTables []string
 	Resume        bool
 	DryRun        bool
-	ProgressBar   bool
-	Interactive   bool
+	Mode          DisplayMode
 }
 
 // Copier handles the data copying operation
@@ -246,7 +258,7 @@ func (c *Copier) Copy() error {
 	// Finish progress displays
 	if c.interactiveMode && c.interactiveDisplay != nil {
 		c.interactiveDisplay.Stop()
-	} else if c.config.ProgressBar && c.progressBar != nil {
+	} else if c.config.Mode == DisplayModeProgress && c.progressBar != nil {
 		_ = c.progressBar.Finish()
 		fmt.Println() // Add a newline after progress bar
 		// Restore the original logger output
@@ -626,7 +638,8 @@ func (c *Copier) logTableCopy(tableName string, rowCount int64, duration time.Du
 
 // initializeDisplayMode initializes the appropriate display mode based on configuration
 func (c *Copier) initializeDisplayMode(tables []*TableInfo, totalRows int64) {
-	if c.config.Interactive {
+	switch c.config.Mode {
+	case DisplayModeInteractive:
 		// Use interactive mode
 		c.interactiveMode = true
 		c.interactiveDisplay = NewInteractiveDisplay(len(tables))
@@ -634,38 +647,47 @@ func (c *Copier) initializeDisplayMode(tables []*TableInfo, totalRows int64) {
 		c.interactiveDisplay.Start()
 		c.logger = utils.NewSilentLogger() // Silent logger for interactive mode
 		c.fkManager.SetLogger(c.logger)    // Update foreign key manager logger too
-		return
-	}
 
-	if c.config.ProgressBar && totalRows > 0 {
-		// Create a custom progress bar that stays at the top with modern styling
-		c.progressBar = progressbar.NewOptions64(totalRows,
-			progressbar.OptionSetDescription(fmt.Sprintf("Copying %d tables", len(tables))),
-			progressbar.OptionSetWriter(os.Stderr),
-			progressbar.OptionSetPredictTime(true),
-			progressbar.OptionFullWidth(),
-			progressbar.OptionEnableColorCodes(true),
-			progressbar.OptionSetTheme(progressbar.Theme{
-				Saucer:        "█",
-				SaucerHead:    "█",
-				SaucerPadding: "░",
-				BarStart:      "▐",
-				BarEnd:        "▌",
-			}),
-		)
+	case DisplayModeProgress:
+		if totalRows > 0 {
+			// Create a custom progress bar that stays at the top with modern styling
+			c.progressBar = progressbar.NewOptions64(totalRows,
+				progressbar.OptionSetDescription(fmt.Sprintf("Copying %d tables", len(tables))),
+				progressbar.OptionSetWriter(os.Stderr),
+				progressbar.OptionSetPredictTime(true),
+				progressbar.OptionFullWidth(),
+				progressbar.OptionEnableColorCodes(true),
+				progressbar.OptionSetTheme(progressbar.Theme{
+					Saucer:        "█",
+					SaucerHead:    "█",
+					SaucerPadding: "░",
+					BarStart:      "▐",
+					BarEnd:        "▌",
+				}),
+			)
 
-		// Initialize custom logger that works with progress bar
-		writer := &progressBarWriter{progressBar: c.progressBar}
-		c.logger = utils.NewSimpleLogger(log.New(writer, "", log.LstdFlags))
+			// Initialize custom logger that works with progress bar
+			writer := &progressBarWriter{progressBar: c.progressBar}
+			c.logger = utils.NewSimpleLogger(log.New(writer, "", log.LstdFlags))
 
-		// Set the global logger to use our custom writer when progress bar is active
-		log.SetOutput(writer)
-		return
-	}
+			// Set the global logger to use our custom writer when progress bar is active
+			log.SetOutput(writer)
+		}
 
-	if totalRows > 0 {
-		fmt.Printf("Starting copy of %d tables (%s rows) with %d workers\n",
-			len(tables), utils.FormatNumber(totalRows), c.config.Parallel)
+	case DisplayModeRaw:
+		// Plain mode - minimal output suitable for headless/CI environments
+		if totalRows > 0 {
+			fmt.Printf("Starting copy of %d tables (%s rows) with %d workers\n",
+				len(tables), utils.FormatNumber(totalRows), c.config.Parallel)
+		}
+		c.logger = utils.NewSimpleLogger(log.New(os.Stderr, "", log.LstdFlags))
+
+	default:
+		// Default to plain mode
+		if totalRows > 0 {
+			fmt.Printf("Starting copy of %d tables (%s rows) with %d workers\n",
+				len(tables), utils.FormatNumber(totalRows), c.config.Parallel)
+		}
 		c.logger = utils.NewSimpleLogger(log.New(os.Stderr, "", log.LstdFlags))
 	}
 }
@@ -678,7 +700,7 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 		return
 	}
 
-	if c.config.ProgressBar && c.progressBar != nil {
+	if c.config.Mode == DisplayModeProgress && c.progressBar != nil {
 		// Calculate speed
 		elapsed := time.Since(c.stats.StartTime)
 		var speedStr string
@@ -698,7 +720,7 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 		return
 	}
 
-	// Default text-based progress updates
+	// Plain mode: text-based progress updates (only for non-headless scenarios)
 	now := time.Now()
 	if now.Sub(c.lastUpdate) > 5*time.Second { // Update every 5 seconds
 		c.lastUpdate = now

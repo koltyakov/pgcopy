@@ -173,14 +173,25 @@ pgcopy copy \
 
 ### Progress Bar Mode
 
-A visual progress bar is shown by default during copy operations with log messages scrolling below. 
-To disable the progress bar (useful for CI/headless environments):
+A visual progress bar can be enabled during copy operations. By default, plain output mode is used (suitable for CI/headless environments):
 
 ```bash
+# Plain output mode (default)
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb"
+
+# Progress bar mode
 pgcopy copy \
   --source "postgres://user:pass@localhost:5432/sourcedb" \
   --dest "postgres://user:pass@localhost:5433/destdb" \
-  --no-progress
+  --output progress
+
+# Interactive mode with live table progress
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb" \
+  --output interactive
 ```
 
 The progress bar stays fixed at the top of the terminal while operational log messages scroll underneath, providing both progress visualization and detailed operation feedback.
@@ -222,7 +233,7 @@ Copy data from source to destination database.
 - `--include-tables`: Tables to include in copying (comma-separated, supports wildcards: `user_*,*_data`)
 - `--resume`: Resume from previous incomplete copy
 - `--dry-run`: Show what would be copied without actually copying
-- `--no-progress`: Disable progress bar (useful for CI/headless environments)
+- `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress)
 
 ### `list`
 
