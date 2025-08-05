@@ -261,7 +261,7 @@ pgcopy copy \
 # ═══════════════════════════════════════════════════════════════
 # This operation will OVERWRITE data in the destination database:
 # 
-# 🎯 Destination: postgres://user:***@localhost:5433/destdb
+# 🎯 Destination: postgres://myserver.com:5432/production
 # 📊 Tables to overwrite: 5 (with data)
 # 📈 Total rows to copy: 1,234,567
 # 

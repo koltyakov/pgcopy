@@ -105,3 +105,65 @@ func MaskPassword(connStr string) string {
 
 	return connStr
 }
+
+// ExtractConnectionDetails extracts clean postgres://server:port/database information from a connection string
+// Removes credentials for safe display
+func ExtractConnectionDetails(connStr string) string {
+	// Handle postgres:// format
+	if strings.HasPrefix(connStr, "postgres://") {
+		parsed, err := url.Parse(connStr)
+		if err != nil {
+			return "connection details unavailable"
+		}
+
+		host := parsed.Hostname()
+		if host == "" {
+			host = "localhost"
+		}
+
+		port := parsed.Port()
+		if port == "" {
+			port = "5432" // Default PostgreSQL port
+		}
+
+		database := strings.TrimPrefix(parsed.Path, "/")
+		if database == "" {
+			database = "postgres" // Default database name
+		}
+
+		return fmt.Sprintf("postgres://%s:%s/%s", host, port, database)
+	}
+
+	// Handle key=value format
+	if strings.Contains(connStr, "=") {
+		var host, port, database string
+
+		// Parse key=value pairs
+		parts := strings.Split(connStr, " ")
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(strings.ToLower(part), "host=") {
+				host = strings.SplitN(part, "=", 2)[1]
+			} else if strings.HasPrefix(strings.ToLower(part), "port=") {
+				port = strings.SplitN(part, "=", 2)[1]
+			} else if strings.HasPrefix(strings.ToLower(part), "dbname=") {
+				database = strings.SplitN(part, "=", 2)[1]
+			}
+		}
+
+		if host == "" {
+			host = "localhost"
+		}
+		if port == "" {
+			port = "5432"
+		}
+		if database == "" {
+			database = "postgres"
+		}
+
+		return fmt.Sprintf("postgres://%s:%s/%s", host, port, database)
+	}
+
+	// Fallback for unrecognized format
+	return "connection details unavailable"
+}

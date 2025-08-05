@@ -768,15 +768,12 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("This operation will OVERWRITE data in the destination database:\n\n")
 
-	// Show connection info (mask passwords)
-	destConn := c.config.DestConn
-	if c.config.DestFile != "" {
-		destConn = fmt.Sprintf("(from file: %s)", c.config.DestFile)
-	} else {
-		// Mask password in connection string for display
-		destConn = utils.MaskPassword(destConn)
+	// Show connection info (extract server, port, database details)
+	destConnDisplay, err := c.getConnectionDisplay()
+	if err != nil {
+		destConnDisplay = "connection details unavailable"
 	}
-	fmt.Printf("🎯 Destination: %s\n", destConn)
+	fmt.Printf("🎯 Destination: %s\n", destConnDisplay)
 	fmt.Printf("📊 Tables to overwrite: %d (with data)\n", len(nonEmptyTables))
 	fmt.Printf("📈 Total rows to copy: %s\n", utils.FormatNumber(totalRows))
 
@@ -802,4 +799,21 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 
 	response = strings.TrimSpace(strings.ToLower(response))
 	return response == "yes"
+}
+
+// getConnectionDisplay extracts and formats connection details for display
+func (c *Copier) getConnectionDisplay() (string, error) {
+	// Get the actual destination connection string
+	destConn := c.config.DestConn
+	if c.config.DestFile != "" {
+		// Read connection string from file
+		connStr, err := readConnectionFromFile(c.config.DestFile)
+		if err != nil {
+			return "", fmt.Errorf("failed to read connection file: %w", err)
+		}
+		destConn = strings.TrimSpace(connStr)
+	}
+
+	// Extract connection details from the connection string
+	return utils.ExtractConnectionDetails(destConn), nil
 }
