@@ -4,6 +4,26 @@
 
 ![pgcopy in action](./assets/pgcopy.gif)
 
+## ⚠️ Important Warning: Data Overwrite
+
+**pgcopy will TRUNCATE and OVERWRITE all data in destination database tables.** 
+
+- All existing data in target tables will be **permanently deleted**
+- Source database data will completely replace destination data
+- **This action cannot be undone**
+
+By default, pgcopy shows a confirmation dialog before proceeding. You can skip this confirmation using the `--skip-backup` flag for automated scenarios.
+
+```bash
+# Default behavior - shows confirmation dialog
+pgcopy copy --source "..." --dest "..."
+
+# Skip confirmation for automated scripts/CI
+pgcopy copy --source "..." --dest "..." --skip-backup
+```
+
+**Always ensure you have proper backups before running pgcopy on production data.**
+
 ## When to Use pgcopy
 
 ### Use Cases
@@ -19,10 +39,12 @@
 
 ### What pgcopy is NOT
 
-- Not for online replication: This is not a real-time replication solution
-- Not Change Data Capture (CDC): It doesn't track or sync incremental changes
-- Not for production replication: Use PostgreSQL's built-in logical/physical replication for production
-- Not a schema migration tool: Both source and destination databases must have identical schemas
+- **Not for incremental sync**: pgcopy completely overwrites destination data, it doesn't merge or update existing records
+- **Not for online replication**: This is not a real-time replication solution
+- **Not Change Data Capture (CDC)**: It doesn't track or sync incremental changes
+- **Not for production replication**: Use PostgreSQL's built-in logical/physical replication for production
+- **Not a schema migration tool**: Both source and destination databases must have identical schemas
+- **Not a backup tool**: Always ensure you have proper backups before using pgcopy
 
 ### Why Choose pgcopy Over Alternatives
 
@@ -105,6 +127,15 @@ make install
 This will install `pgcopy` to `/usr/local/bin/`.
 
 ## Usage
+
+### ⚠️ Data Safety First
+
+Before using pgcopy, understand that it will **completely overwrite** data in the destination database:
+
+1. **Backup your destination database** before running pgcopy
+2. **Verify your connection strings** - double-check source and destination
+3. **Use --dry-run first** to preview what will be copied
+4. **Test with non-production data** before running on production systems
 
 ### Basic Usage
 
@@ -215,6 +246,56 @@ pgcopy copy \
   --dry-run
 ```
 
+### Data Overwrite Confirmation
+
+By default, pgcopy shows a safety confirmation dialog before overwriting data:
+
+```bash
+# Will prompt for confirmation
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb"
+
+# Example confirmation dialog:
+# ⚠️  WARNING: Data Overwrite Operation
+# ═══════════════════════════════════════════════════════════════
+# This operation will OVERWRITE data in the destination database:
+# 
+# 🎯 Destination: postgres://user:***@localhost:5433/destdb
+# 📊 Tables to overwrite: 25
+# 📈 Total rows to copy: 1,234,567
+# 
+# ⚠️  ALL EXISTING DATA in these tables will be DELETED:
+#    • public.users (50,000 rows)
+#    • public.orders (125,300 rows)
+#    ... and 23 more tables
+# 
+# ═══════════════════════════════════════════════════════════════
+# This action CANNOT be undone. Are you sure you want to proceed?
+# Type 'yes' to confirm, or anything else to cancel:
+```
+
+### Skip Confirmation for Automation
+
+For scripts and CI environments, use `--skip-backup` to bypass the confirmation:
+
+```bash
+# No confirmation dialog - proceed directly
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb" \
+  --skip-backup
+
+# Useful for automated environments
+pgcopy copy \
+  --source-file prod.conn \
+  --dest-file staging.conn \
+  --skip-backup \
+  --parallel 8
+```
+
+**⚠️ Use `--skip-backup` only when you're certain about the destination and have proper backups.**
+
 ## Commands
 
 ### `copy`
@@ -233,6 +314,7 @@ Copy data from source to destination database.
 - `--include-tables`: Tables to include in copying (comma-separated, supports wildcards: `user_*,*_data`)
 - `--resume`: Resume from previous incomplete copy
 - `--dry-run`: Show what would be copied without actually copying
+- `--skip-backup`: Skip confirmation dialog for data overwrite (use with caution)
 - `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress)
 
 ### `list`
@@ -437,6 +519,27 @@ Result: Actually works where pg_dump fails
 ```
 
 ## Examples
+
+### Safe Development Workflow
+
+```bash
+# 1. Always start with dry-run to verify what will be copied
+pgcopy copy \
+  --source "postgres://user:pass@prod-db:5432/myapp" \
+  --dest "postgres://user:pass@staging-db:5432/myapp" \
+  --dry-run
+
+# 2. Run with confirmation dialog (default)
+pgcopy copy \
+  --source "postgres://user:pass@prod-db:5432/myapp" \
+  --dest "postgres://user:pass@staging-db:5432/myapp"
+
+# 3. For automation/CI, skip confirmation
+pgcopy copy \
+  --source "postgres://user:pass@prod-db:5432/myapp" \
+  --dest "postgres://user:pass@staging-db:5432/myapp" \
+  --skip-backup
+```
 
 ### Basic Copy
 
