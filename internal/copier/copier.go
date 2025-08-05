@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -745,6 +746,24 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 
 // confirmDataOverwrite shows a confirmation dialog for data overwrite operation
 func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool {
+	// Filter out tables with no rows for the warning display
+	nonEmptyTables := make([]*TableInfo, 0)
+	for _, table := range tables {
+		if table.RowCount > 0 {
+			nonEmptyTables = append(nonEmptyTables, table)
+		}
+	}
+
+	// If all tables are empty, skip the warning entirely
+	if len(nonEmptyTables) == 0 {
+		return true // Proceed without warning for empty tables
+	}
+
+	// Sort tables by row count in descending order (largest first)
+	sort.Slice(nonEmptyTables, func(i, j int) bool {
+		return nonEmptyTables[i].RowCount > nonEmptyTables[j].RowCount
+	})
+
 	fmt.Printf("\n⚠️  WARNING: Data Overwrite Operation\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("This operation will OVERWRITE data in the destination database:\n\n")
@@ -758,13 +777,13 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 		destConn = utils.MaskPassword(destConn)
 	}
 	fmt.Printf("🎯 Destination: %s\n", destConn)
-	fmt.Printf("📊 Tables to overwrite: %d\n", len(tables))
+	fmt.Printf("📊 Tables to overwrite: %d (with data)\n", len(nonEmptyTables))
 	fmt.Printf("📈 Total rows to copy: %s\n", utils.FormatNumber(totalRows))
 
 	fmt.Printf("\n⚠️  ALL EXISTING DATA in these tables will be DELETED:\n")
-	for i, table := range tables {
+	for i, table := range nonEmptyTables {
 		if i >= 10 { // Show only first 10 tables to avoid overwhelming output
-			fmt.Printf("   ... and %d more tables\n", len(tables)-10)
+			fmt.Printf("   ... and %d more tables\n", len(nonEmptyTables)-10)
 			break
 		}
 		fmt.Printf("   • %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.RowCount))

@@ -262,13 +262,15 @@ pgcopy copy \
 # This operation will OVERWRITE data in the destination database:
 # 
 # 🎯 Destination: postgres://user:***@localhost:5433/destdb
-# 📊 Tables to overwrite: 25
+# 📊 Tables to overwrite: 5 (with data)
 # 📈 Total rows to copy: 1,234,567
 # 
 # ⚠️  ALL EXISTING DATA in these tables will be DELETED:
+#    • public.orders (500,000 rows)
+#    • public.products (300,000 rows)
 #    • public.users (50,000 rows)
-#    • public.orders (125,300 rows)
-#    ... and 23 more tables
+#    • public.categories (1,200 rows)
+#    • public.settings (45 rows)
 # 
 # ═══════════════════════════════════════════════════════════════
 # This action CANNOT be undone. Are you sure you want to proceed?
