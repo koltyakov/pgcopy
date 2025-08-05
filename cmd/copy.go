@@ -38,6 +38,7 @@ Examples:
 		includeTables, _ := cmd.Flags().GetStringSlice("include-tables")
 		resume, _ := cmd.Flags().GetBool("resume")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
+		skipBackup, _ := cmd.Flags().GetBool("skip-backup")
 		output, _ := cmd.Flags().GetString("output")
 
 		// Parse display mode
@@ -64,6 +65,7 @@ Examples:
 			IncludeTables: includeTables,
 			Resume:        resume,
 			DryRun:        dryRun,
+			SkipBackup:    skipBackup,
 			Mode:          displayMode,
 		}
 
@@ -103,5 +105,6 @@ func init() {
 	copyCmd.Flags().StringSlice("include-tables", []string{}, "Tables to include in copying (supports wildcards: user_*,*_data)")
 	copyCmd.Flags().Bool("resume", false, "Resume from previous incomplete copy")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
+	copyCmd.Flags().Bool("skip-backup", false, "Skip confirmation dialog for data overwrite")
 	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress)")
 }

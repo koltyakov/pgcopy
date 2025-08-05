@@ -3,6 +3,7 @@
 package copier
 
 import (
+	"bufio"
 	"database/sql"
 	"fmt"
 	"log"
@@ -59,6 +60,7 @@ type Config struct {
 	IncludeTables []string
 	Resume        bool
 	DryRun        bool
+	SkipBackup    bool
 	Mode          DisplayMode
 }
 
@@ -211,6 +213,14 @@ func (c *Copier) Copy() error {
 	// Calculate total rows for progress tracking
 	totalRows := c.calculateTotalRows(tables)
 	c.stats.TotalRows = totalRows
+
+	// Show confirmation dialog unless skip-backup is enabled or dry-run mode
+	if !c.config.SkipBackup && !c.config.DryRun {
+		if !c.confirmDataOverwrite(tables, totalRows) {
+			fmt.Println("Operation cancelled by user.")
+			return nil
+		}
+	}
 
 	// Log the start of copy operation
 	if c.fileLogger != nil {
@@ -731,4 +741,46 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 			fmt.Printf("Syncing: %s\n", strings.Join(c.getTablesInProgress(), ", "))
 		}
 	}
+}
+
+// confirmDataOverwrite shows a confirmation dialog for data overwrite operation
+func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool {
+	fmt.Printf("\n⚠️  WARNING: Data Overwrite Operation\n")
+	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("This operation will OVERWRITE data in the destination database:\n\n")
+
+	// Show connection info (mask passwords)
+	destConn := c.config.DestConn
+	if c.config.DestFile != "" {
+		destConn = fmt.Sprintf("(from file: %s)", c.config.DestFile)
+	} else {
+		// Mask password in connection string for display
+		destConn = utils.MaskPassword(destConn)
+	}
+	fmt.Printf("🎯 Destination: %s\n", destConn)
+	fmt.Printf("📊 Tables to overwrite: %d\n", len(tables))
+	fmt.Printf("📈 Total rows to copy: %s\n", utils.FormatNumber(totalRows))
+
+	fmt.Printf("\n⚠️  ALL EXISTING DATA in these tables will be DELETED:\n")
+	for i, table := range tables {
+		if i >= 10 { // Show only first 10 tables to avoid overwhelming output
+			fmt.Printf("   ... and %d more tables\n", len(tables)-10)
+			break
+		}
+		fmt.Printf("   • %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.RowCount))
+	}
+
+	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")
+	fmt.Printf("This action CANNOT be undone. Are you sure you want to proceed?\n")
+	fmt.Printf("Type 'yes' to confirm, or anything else to cancel: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Printf("\nError reading input: %v\n", err)
+		return false
+	}
+
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "yes"
 }

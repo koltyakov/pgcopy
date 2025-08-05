@@ -2,6 +2,8 @@ package utils // nolint:revive // utils is an acceptable name for internal utili
 
 import (
 	"fmt"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -72,4 +74,34 @@ func FormatNumber(n int64) string {
 		return fmt.Sprintf("%dB", n/1000000000)
 	}
 	return fmt.Sprintf("%.1fB", float64(n)/1000000000)
+}
+
+// MaskPassword masks password in PostgreSQL connection strings for safe display
+func MaskPassword(connStr string) string {
+	// Handle postgres:// URLs
+	if strings.HasPrefix(connStr, "postgres://") || strings.HasPrefix(connStr, "postgresql://") {
+		parsed, err := url.Parse(connStr)
+		if err != nil {
+			return "***masked***"
+		}
+		if parsed.User != nil {
+			if _, hasPassword := parsed.User.Password(); hasPassword {
+				parsed.User = url.UserPassword(parsed.User.Username(), "***")
+			}
+		}
+		return parsed.String()
+	}
+
+	// Handle key=value format
+	if strings.Contains(connStr, "password=") {
+		parts := strings.Split(connStr, " ")
+		for i, part := range parts {
+			if strings.HasPrefix(strings.ToLower(part), "password=") {
+				parts[i] = "password=***"
+			}
+		}
+		return strings.Join(parts, " ")
+	}
+
+	return connStr
 }
