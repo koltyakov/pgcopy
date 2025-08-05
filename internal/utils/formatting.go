@@ -142,11 +142,13 @@ func ExtractConnectionDetails(connStr string) string {
 		parts := strings.Split(connStr, " ")
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
-			if strings.HasPrefix(strings.ToLower(part), "host=") {
+			lowerPart := strings.ToLower(part)
+			switch {
+			case strings.HasPrefix(lowerPart, "host="):
 				host = strings.SplitN(part, "=", 2)[1]
-			} else if strings.HasPrefix(strings.ToLower(part), "port=") {
+			case strings.HasPrefix(lowerPart, "port="):
 				port = strings.SplitN(part, "=", 2)[1]
-			} else if strings.HasPrefix(strings.ToLower(part), "dbname=") {
+			case strings.HasPrefix(lowerPart, "dbname="):
 				database = strings.SplitN(part, "=", 2)[1]
 			}
 		}
