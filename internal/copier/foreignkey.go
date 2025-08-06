@@ -207,7 +207,7 @@ func (fkm *ForeignKeyManager) DisableReplicaMode() error {
 // DropForeignKeysForTable drops all foreign keys that reference or are referenced by a table
 func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 	// Skip FK management for empty tables that won't be copied
-	if table.RowCount == 0 {
+	if table.TotalRows == 0 {
 		fkm.logger.LogProgress("Skipping FK management for empty table %s", utils.HighlightTableName(table.Schema, table.Name))
 		return nil
 	}

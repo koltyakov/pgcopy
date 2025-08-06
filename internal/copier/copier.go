@@ -11,9 +11,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/koltyakov/pgcopy/internal/server"
+	"github.com/koltyakov/pgcopy/internal/state"
 	"github.com/koltyakov/pgcopy/internal/utils"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/schollz/progressbar/v3"
@@ -47,32 +48,25 @@ const (
 	DisplayModeProgress DisplayMode = "progress"
 	// DisplayModeInteractive shows an interactive live display with table details
 	DisplayModeInteractive DisplayMode = "interactive"
+	// DisplayModeWeb launches a web interface for monitoring the copy process
+	DisplayModeWeb DisplayMode = "web"
 )
 
-// Config holds the configuration for the data copy operation
-type Config struct {
-	SourceConn    string
-	DestConn      string
-	SourceFile    string
-	DestFile      string
-	Parallel      int
-	BatchSize     int
-	ExcludeTables []string
-	IncludeTables []string
-	Resume        bool
-	DryRun        bool
-	SkipBackup    bool
-	Mode          DisplayMode
+// getDisplayMode converts OutputMode string to DisplayMode
+func (c *Copier) getDisplayMode() DisplayMode {
+	return DisplayMode(c.config.OutputMode)
 }
 
-// Copier handles the data copying operation
+// Config is a type alias for state.OperationConfig for backward compatibility
+type Config = state.OperationConfig
+
+// Copier handles the data copying operation using centralized state management
 type Copier struct {
-	config             *Config
+	config             *state.OperationConfig
 	sourceDB           *sql.DB
 	destDB             *sql.DB
 	fkManager          *ForeignKeyManager
-	mu                 sync.Mutex
-	stats              *CopyStats
+	state              *state.CopyState // Centralized state management
 	lastUpdate         time.Time
 	progressBar        *progressbar.ProgressBar
 	fileLogger         *log.Logger         // Logger for copy.log file
@@ -81,77 +75,113 @@ type Copier struct {
 	tablesInProgress   map[string]bool     // Track which tables are currently being processed
 	interactiveMode    bool                // Whether to use interactive display
 	interactiveDisplay *InteractiveDisplay // Interactive progress display
+	webServer          *server.WebServer   // Web server for web mode
 }
 
-// CopyStats tracks copying statistics
-type CopyStats struct {
-	TablesProcessed     int64
-	RowsCopied          int64
-	TotalTables         int64
-	TotalRows           int64
-	ForeignKeysDetected int64
-	ForeignKeysDropped  int64
-	StartTime           time.Time
-	Errors              []error
-}
+// TableInfo is a type alias for state.TableState for backward compatibility
+type TableInfo = state.TableState
 
-// TableInfo holds information about a table to be copied
-type TableInfo struct {
-	Schema    string
-	Name      string
-	RowCount  int64
-	Columns   []string
-	PKColumns []string
-}
+// CopyStats is deprecated - use state.Summary instead
+type CopyStats = state.Summary
 
 // New creates a new Copier instance
 func New(config *Config) (*Copier, error) {
+	// Create state instance
+	operationID := fmt.Sprintf("copy_%d", time.Now().Unix())
+	copyState := state.NewCopyState(operationID, *config)
+
+	return NewWithState(config, copyState)
+}
+
+// NewWithWebPort creates a new Copier instance with web server support
+func NewWithWebPort(config *Config, webPort ...int) (*Copier, error) {
+	// Create state instance
+	operationID := fmt.Sprintf("copy_%d", time.Now().Unix())
+	copyState := state.NewCopyState(operationID, *config)
+
+	copier, err := NewWithState(config, copyState)
+	if err != nil {
+		return nil, err
+	}
+
+	// Initialize web server if in web mode
+	if config.OutputMode == "web" {
+		port := 8080 // Default port
+		if len(webPort) > 0 {
+			port = webPort[0]
+		}
+		copier.webServer = server.NewWebServer(copyState, port)
+		if err := copier.webServer.Start(); err != nil {
+			return nil, fmt.Errorf("failed to start web server: %w", err)
+		}
+	}
+
+	return copier, nil
+}
+
+// NewWithState creates a new Copier instance with an existing state
+func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c := &Copier{
-		config: config,
-		stats: &CopyStats{
-			StartTime: time.Now(),
-			Errors:    make([]error, 0),
-		},
+		config:           config,
+		state:            copyState,
 		tablesInProgress: make(map[string]bool),
 	}
 
 	var err error
+
+	// Set initializing status
+	c.state.SetStatus(state.StatusInitializing)
+	c.state.AddLog(state.LogLevelInfo, "Initializing database connections", "copier", "", nil)
 
 	// Connect to source database
 	sourceConnStr := config.SourceConn
 	if config.SourceFile != "" {
 		sourceConnStr, err = readConnectionFromFile(config.SourceFile)
 		if err != nil {
+			c.state.AddError("connection_error", fmt.Sprintf("Failed to read source file: %v", err), "copier", true, nil)
 			return nil, fmt.Errorf("failed to read source connection file: %w", err)
 		}
 	}
 
 	c.sourceDB, err = sql.Open("postgres", sourceConnStr)
 	if err != nil {
+		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to source: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to connect to source database: %w", err)
 	}
 
 	if err = c.sourceDB.Ping(); err != nil {
+		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping source: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to ping source database: %w", err)
 	}
+
+	// Update source connection state
+	sourceDetails := utils.ExtractConnectionDetails(sourceConnStr)
+	c.state.UpdateConnectionDetails("source", sourceDetails, state.ConnectionStatusConnected)
 
 	// Connect to destination database
 	destConnStr := config.DestConn
 	if config.DestFile != "" {
 		destConnStr, err = readConnectionFromFile(config.DestFile)
 		if err != nil {
+			c.state.AddError("connection_error", fmt.Sprintf("Failed to read dest file: %v", err), "copier", true, nil)
 			return nil, fmt.Errorf("failed to read destination connection file: %w", err)
 		}
 	}
 
 	c.destDB, err = sql.Open("postgres", destConnStr)
 	if err != nil {
+		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to dest: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to connect to destination database: %w", err)
 	}
 
 	if err = c.destDB.Ping(); err != nil {
+		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping dest: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to ping destination database: %w", err)
 	}
+
+	// Update destination connection state
+	destDetails := utils.ExtractConnectionDetails(destConnStr)
+	c.state.UpdateConnectionDetails("destination", destDetails, state.ConnectionStatusConnected)
 
 	// Configure connection pools for performance
 	c.sourceDB.SetMaxOpenConns(config.Parallel * 2)
@@ -176,7 +206,7 @@ func New(config *Config) (*Copier, error) {
 	return c, nil
 }
 
-// Close closes database connections
+// Close closes database connections and web server
 func (c *Copier) Close() {
 	if c.sourceDB != nil {
 		if err := c.sourceDB.Close(); err != nil {
@@ -188,6 +218,8 @@ func (c *Copier) Close() {
 			c.logger.LogError("Failed to close destination database connection: %v", err)
 		}
 	}
+	// Note: WebServer doesn't currently have a Stop method
+	// The HTTP server will be closed when the process terminates
 	if c.logFile != nil {
 		if err := c.logFile.Close(); err != nil {
 			// Can't use c.logger.LogError here since we're closing the log file
@@ -198,22 +230,35 @@ func (c *Copier) Close() {
 
 // Copy performs the data copying operation
 func (c *Copier) Copy() error {
+	// Set operation status to preparing
+	c.state.SetStatus(state.StatusPreparing)
+	c.state.AddLog(state.LogLevelInfo, "Starting copy operation", "copier", "", nil)
+
 	// Get list of tables to copy
 	tables, err := c.getTablesToCopy()
 	if err != nil {
+		c.state.SetStatus(state.StatusFailed)
+		c.state.AddError("preparation_error", fmt.Sprintf("Failed to get tables list: %v", err), "copier", true, nil)
 		return fmt.Errorf("failed to get tables list: %w", err)
 	}
 
 	if len(tables) == 0 {
+		c.state.SetStatus(state.StatusCompleted)
+		c.state.AddLog(state.LogLevelInfo, "No tables to copy", "copier", "", nil)
 		fmt.Println("No tables to copy")
 		return nil
 	}
 
-	c.stats.TotalTables = int64(len(tables))
+	// Update state with table information - this will calculate totals automatically
+	for _, table := range tables {
+		c.state.AddTable(table.Schema, table.Name, table.TotalRows)
+	}
 
-	// Calculate total rows for progress tracking
-	totalRows := c.calculateTotalRows(tables)
-	c.stats.TotalRows = totalRows
+	// Get calculated totals for logging (after AddTable calls have accumulated the totals)
+	totalTables := c.state.Summary.TotalTables
+	totalRows := c.state.Summary.TotalRows
+
+	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Found %d tables with %d total rows", totalTables, totalRows), "copier", "", nil)
 
 	// Show confirmation dialog unless skip-backup is enabled or dry-run mode
 	if !c.config.SkipBackup && !c.config.DryRun {
@@ -246,13 +291,32 @@ func (c *Copier) Copy() error {
 
 	// Try to use replica mode first, fall back to dropping FKs if needed
 	if err := c.fkManager.TryUseReplicaMode(); err != nil {
+		c.state.SetStatus(state.StatusFailed)
+		c.state.AddError("foreign_key_error", fmt.Sprintf("Failed to setup foreign key handling: %v", err), "copier", true, nil)
 		return fmt.Errorf("failed to setup foreign key handling: %w", err)
 	}
+
+	// Set operation status to copying and trigger event
+	c.state.SetStatus(state.StatusCopying)
+	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting parallel copy with %d workers", c.config.Parallel), "copier", "", nil)
 
 	// Copy tables in parallel
 	err = c.copyTablesParallel(tables)
 
 	if err != nil {
+		c.state.SetStatus(state.StatusFailed)
+		c.state.AddError("copy_error", fmt.Sprintf("Copy operation failed: %v", err), "copier", true, nil)
+
+		// Wait for web client acknowledgment if using web output
+		if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
+			fmt.Println("Waiting for web client to acknowledge failure...")
+			if c.webServer.WaitForCompletionAck(30 * time.Second) {
+				fmt.Println("Web client acknowledged failure")
+			} else {
+				fmt.Println("Proceeding without web client acknowledgment")
+			}
+		}
+
 		return err
 	}
 
@@ -266,10 +330,24 @@ func (c *Copier) Copy() error {
 		c.logger.LogWarn("Failed to cleanup FK backup file: %v", cleanupErr)
 	}
 
+	// Set operation status to completed
+	c.state.SetStatus(state.StatusCompleted)
+	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Copy operation completed successfully - %d tables, %d rows", c.state.Summary.CompletedTables, c.state.Summary.SyncedRows), "copier", "", nil)
+
+	// Wait for web client acknowledgment if using web output
+	if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
+		fmt.Println("Waiting for web client to acknowledge completion...")
+		if c.webServer.WaitForCompletionAck(30 * time.Second) {
+			fmt.Println("Web client acknowledged completion")
+		} else {
+			fmt.Println("Proceeding without web client acknowledgment")
+		}
+	}
+
 	// Finish progress displays
 	if c.interactiveMode && c.interactiveDisplay != nil {
 		c.interactiveDisplay.Stop()
-	} else if c.config.Mode == DisplayModeProgress && c.progressBar != nil {
+	} else if c.getDisplayMode() == DisplayModeProgress && c.progressBar != nil {
 		_ = c.progressBar.Finish()
 		fmt.Println() // Add a newline after progress bar
 		// Restore the original logger output
@@ -282,9 +360,9 @@ func (c *Copier) Copy() error {
 	// Log the completion of copy operation
 	if c.fileLogger != nil {
 		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		totalDuration := time.Since(c.stats.StartTime)
+		totalDuration := time.Since(c.state.StartTime)
 		c.fileLogger.Printf("%s | COPY_COMPLETE | %d tables | %d rows | %s",
-			timestamp, c.stats.TablesProcessed, c.stats.RowsCopied, utils.FormatLogDuration(totalDuration))
+			timestamp, c.state.Summary.CompletedTables, c.state.Summary.SyncedRows, utils.FormatLogDuration(totalDuration))
 	}
 
 	return nil
@@ -327,12 +405,11 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 		}
 
 		tableInfo := &TableInfo{
-			Schema:   schema,
-			Name:     name,
-			RowCount: rowCount.Int64,
-		}
-
-		// Get column information
+			Schema:    schema,
+			Name:      name,
+			FullName:  fmt.Sprintf("%s.%s", schema, name),
+			TotalRows: rowCount.Int64,
+		} // Get column information
 		if err := c.getTableColumns(tableInfo); err != nil {
 			c.logger.LogWarn("Failed to get columns for %s: %v", utils.HighlightTableName(schema, name), err)
 			continue
@@ -468,23 +545,6 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 	return nil
 }
 
-// calculateTotalRows calculates the total number of rows across all tables
-func (c *Copier) calculateTotalRows(tables []*TableInfo) int64 {
-	var total int64
-	for _, table := range tables {
-		// Get actual row count for better accuracy
-		query := fmt.Sprintf("SELECT COUNT(*) FROM %s.\"%s\"", table.Schema, table.Name) // #nosec G201 - schema and table names from trusted database query
-		var count int64
-		if err := c.sourceDB.QueryRow(query).Scan(&count); err != nil {
-			// Use approximate count if exact count fails
-			count = table.RowCount
-		}
-		table.RowCount = count
-		total += count
-	}
-	return total
-}
-
 // dryRun shows what would be copied without actually copying
 func (c *Copier) dryRun(tables []*TableInfo) error {
 	fmt.Println("DRY RUN - The following tables would be copied:")
@@ -492,8 +552,8 @@ func (c *Copier) dryRun(tables []*TableInfo) error {
 
 	var totalRows int64
 	for _, table := range tables {
-		fmt.Printf("  %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.RowCount))
-		totalRows += table.RowCount
+		fmt.Printf("  %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.TotalRows))
+		totalRows += table.TotalRows
 	}
 
 	fmt.Println("==========================================")
@@ -521,10 +581,8 @@ func readConnectionFromFile(filename string) (string, error) {
 
 // updateProgress prints progress updates periodically
 func (c *Copier) updateProgress(rowsAdded int64) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.stats.RowsCopied += rowsAdded
+	// Note: Don't directly manipulate c.state.Summary.SyncedRows here
+	// The state system will handle this through UpdateTableProgress calls
 
 	// Handle different display modes
 	c.handleProgressUpdate(rowsAdded)
@@ -532,18 +590,12 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 
 // setTableInProgress marks a table as currently being processed
 func (c *Copier) setTableInProgress(schema, name string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	tableKey := fmt.Sprintf("%s.%s", schema, name)
 	c.tablesInProgress[tableKey] = true
 }
 
 // removeTableFromProgress removes a table from the in-progress list
 func (c *Copier) removeTableFromProgress(schema, name string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	tableKey := fmt.Sprintf("%s.%s", schema, name)
 	delete(c.tablesInProgress, tableKey)
 
@@ -555,20 +607,21 @@ func (c *Copier) removeTableFromProgress(schema, name string) {
 
 // startTableInInteractive starts tracking a table in interactive mode
 func (c *Copier) startTableInInteractive(table *TableInfo) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	tableKey := fmt.Sprintf("%s.%s", table.Schema, table.Name)
 	c.tablesInProgress[tableKey] = true
 
 	// Update interactive display if enabled
 	if c.interactiveMode && c.interactiveDisplay != nil {
-		c.interactiveDisplay.StartTable(table.Schema, table.Name, table.RowCount)
+		c.interactiveDisplay.StartTable(table.Schema, table.Name, table.TotalRows)
 	}
 }
 
 // updateTableProgress updates the progress of a specific table
 func (c *Copier) updateTableProgress(schema, name string, copiedRows int64) {
+	// Update state system for proper tracking and WebSocket updates
+	c.state.UpdateTableProgress(schema, name, copiedRows)
+
+	// Update interactive display if available
 	if c.interactiveMode && c.interactiveDisplay != nil {
 		c.interactiveDisplay.UpdateTableProgress(schema, name, copiedRows)
 	}
@@ -649,7 +702,7 @@ func (c *Copier) logTableCopy(tableName string, rowCount int64, duration time.Du
 
 // initializeDisplayMode initializes the appropriate display mode based on configuration
 func (c *Copier) initializeDisplayMode(tables []*TableInfo, totalRows int64) {
-	switch c.config.Mode {
+	switch c.getDisplayMode() {
 	case DisplayModeInteractive:
 		// Use interactive mode
 		c.interactiveMode = true
@@ -711,19 +764,19 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 		return
 	}
 
-	if c.config.Mode == DisplayModeProgress && c.progressBar != nil {
+	if c.getDisplayMode() == DisplayModeProgress && c.progressBar != nil {
 		// Calculate speed
-		elapsed := time.Since(c.stats.StartTime)
+		elapsed := time.Since(c.state.StartTime)
 		var speedStr string
 		if elapsed.Seconds() > 0 {
-			rowsPerSecond := float64(c.stats.RowsCopied) / elapsed.Seconds()
+			rowsPerSecond := float64(c.state.Summary.SyncedRows) / elapsed.Seconds()
 			speedStr = fmt.Sprintf(" (%s/s)", utils.FormatNumber(int64(rowsPerSecond)))
 		}
 
 		// Update progress bar description with remaining tables, formatted row counts, and speed
 		description := fmt.Sprintf("Copying rows (%d/%d tables) %s/%s%s",
-			c.stats.TablesProcessed, c.stats.TotalTables,
-			utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), speedStr)
+			c.state.Summary.CompletedTables, c.state.Summary.TotalTables,
+			utils.FormatNumber(c.state.Summary.SyncedRows), utils.FormatNumber(c.state.Summary.TotalRows), speedStr)
 		c.progressBar.Describe(description)
 
 		// Update progress bar by the number of rows added
@@ -735,10 +788,10 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 	now := time.Now()
 	if now.Sub(c.lastUpdate) > 5*time.Second { // Update every 5 seconds
 		c.lastUpdate = now
-		percentage := float64(c.stats.RowsCopied) / float64(c.stats.TotalRows) * 100
-		if c.stats.TotalRows > 0 {
+		percentage := float64(c.state.Summary.SyncedRows) / float64(c.state.Summary.TotalRows) * 100
+		if c.state.Summary.TotalRows > 0 {
 			fmt.Printf("Progress: %s/%s rows (%.1f%%) - %d/%d tables processed\n",
-				utils.FormatNumber(c.stats.RowsCopied), utils.FormatNumber(c.stats.TotalRows), percentage, c.stats.TablesProcessed, c.stats.TotalTables)
+				utils.FormatNumber(c.state.Summary.SyncedRows), utils.FormatNumber(c.state.Summary.TotalRows), percentage, c.state.Summary.CompletedTables, c.state.Summary.TotalTables)
 			fmt.Printf("Syncing: %s\n", strings.Join(c.getTablesInProgress(), ", "))
 		}
 	}
@@ -749,7 +802,7 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 	// Filter out tables with no rows for the warning display
 	nonEmptyTables := make([]*TableInfo, 0)
 	for _, table := range tables {
-		if table.RowCount > 0 {
+		if table.TotalRows > 0 {
 			nonEmptyTables = append(nonEmptyTables, table)
 		}
 	}
@@ -761,7 +814,7 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 
 	// Sort tables by row count in descending order (largest first)
 	sort.Slice(nonEmptyTables, func(i, j int) bool {
-		return nonEmptyTables[i].RowCount > nonEmptyTables[j].RowCount
+		return nonEmptyTables[i].TotalRows > nonEmptyTables[j].TotalRows
 	})
 
 	fmt.Printf("\n⚠️  WARNING: Data Overwrite Operation\n")
@@ -783,7 +836,7 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 			fmt.Printf("   ... and %d more tables\n", len(nonEmptyTables)-10)
 			break
 		}
-		fmt.Printf("   • %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.RowCount))
+		fmt.Printf("   • %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.TotalRows))
 	}
 
 	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")

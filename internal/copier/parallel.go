@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/pgcopy/internal/state"
 	"github.com/koltyakov/pgcopy/internal/utils"
 )
 
@@ -40,9 +41,8 @@ func (c *Copier) copyTablesParallel(tables []*TableInfo) error {
 	for err := range errChan {
 		if err != nil {
 			errors = append(errors, err)
-			c.mu.Lock()
-			c.stats.Errors = append(c.stats.Errors, err)
-			c.mu.Unlock()
+			// Use state system for error tracking
+			c.state.AddError("copy_error", err.Error(), "copier", false, nil)
 		}
 	}
 
@@ -58,31 +58,40 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 	defer wg.Done()
 
 	for table := range tableChan {
-		// Mark table as in progress (for both interactive and non-interactive modes)
+		// Mark table as in progress and update state
 		if c.interactiveMode {
 			c.startTableInInteractive(table)
 		} else {
 			c.setTableInProgress(table.Schema, table.Name)
 		}
 
+		// Update state to track table start
+		c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCopying)
+		c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
+
 		if err := c.copyTable(table); err != nil {
 			c.logger.LogError("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
+
+			// Update state with table error
+			c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusFailed)
+			c.state.AddTableError(table.Schema, table.Name, err.Error(), nil)
 
 			// Mark as failed in interactive mode
 			if c.interactiveMode && c.interactiveDisplay != nil {
 				c.interactiveDisplay.CompleteTable(table.Schema, table.Name, false)
 			}
 		} else {
-			c.mu.Lock()
-			c.stats.TablesProcessed++
+			// Update state with table completion
+			c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCompleted)
+			c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Completed copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
+
 			// Update progress bar description when a table is completed
-			if c.config.Mode == DisplayModeProgress && c.progressBar != nil {
+			if c.getDisplayMode() == DisplayModeProgress && c.progressBar != nil {
 				description := fmt.Sprintf("Copying rows (%d/%d tables)",
-					c.stats.TablesProcessed, c.stats.TotalTables)
+					c.state.Summary.CompletedTables, c.state.Summary.TotalTables)
 				c.progressBar.Describe(description)
 			}
-			c.mu.Unlock()
 		}
 
 		// Remove table from progress tracking when done (success or failure)
@@ -94,12 +103,12 @@ func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *s
 func (c *Copier) copyTable(table *TableInfo) error {
 	startTime := time.Now()
 
-	if table.RowCount == 0 {
+	if table.TotalRows == 0 {
 		c.logger.LogProgress("Skipping empty table %s", utils.HighlightTableName(table.Schema, table.Name))
 		return nil
 	}
 
-	c.logger.LogProgress("Copying table %s (%s rows)", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.RowCount)))
+	c.logger.LogProgress("Copying table %s (%s rows)", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)))
 
 	// Drop foreign keys for this table if not using replica mode
 	if err := c.fkManager.DropForeignKeysForTable(table); err != nil {
@@ -127,9 +136,9 @@ func (c *Copier) copyTable(table *TableInfo) error {
 
 	// Log to copy.log file
 	tableFullName := fmt.Sprintf("%s.%s", table.Schema, table.Name)
-	c.logTableCopy(tableFullName, table.RowCount, duration)
+	c.logTableCopy(tableFullName, table.TotalRows, duration)
 
-	c.logger.LogSuccess("Completed copying %s (%s rows) in %s", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.RowCount)), utils.Colorize(utils.ColorDim, utils.FormatDuration(duration)))
+	c.logger.LogSuccess("Completed copying %s (%s rows) in %s", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)), utils.Colorize(utils.ColorDim, utils.FormatDuration(duration)))
 	return nil
 }
 
@@ -243,10 +252,8 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 		// Update progress periodically
 		c.updateProgress(batchRowsCopied)
 
-		// Update table-specific progress for interactive mode
-		if c.interactiveMode {
-			c.updateTableProgress(table.Schema, table.Name, rowsCopied)
-		}
+		// Update table-specific progress for state tracking
+		c.updateTableProgress(table.Schema, table.Name, rowsCopied)
 
 		// If we got fewer rows than batch size, we're done
 		if batchRowsCopied < int64(c.config.BatchSize) {
