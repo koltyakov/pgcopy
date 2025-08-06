@@ -25,27 +25,13 @@ Examples:
   pgcopy list -s "postgres://user:pass@localhost:5432/mydb" --schema public`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
-		sourceFile, _ := cmd.Flags().GetString("source-file")
 		schema, _ := cmd.Flags().GetString("schema")
 
-		if sourceConn == "" && sourceFile == "" {
-			log.Fatal("Either --source connection string or --source-file must be provided")
+		if sourceConn == "" {
+			log.Fatal("--source connection string must be provided")
 		}
 
-		var connStr string
-		var err error
-
-		if sourceFile != "" {
-			content, err := os.ReadFile(sourceFile) // #nosec G304 - file path from command line argument
-			if err != nil {
-				log.Fatalf("Failed to read source file: %v", err)
-			}
-			connStr = string(content)
-		} else {
-			connStr = sourceConn
-		}
-
-		db, err := sql.Open("postgres", connStr)
+		db, err := sql.Open("postgres", sourceConn)
 		if err != nil {
 			log.Fatalf("Failed to connect to database: %v", err)
 		}
@@ -156,6 +142,5 @@ func init() {
 	rootCmd.AddCommand(listCmd)
 
 	listCmd.Flags().StringP("source", "s", "", "Source database connection string")
-	listCmd.Flags().String("source-file", "", "Source database connection config file")
 	listCmd.Flags().String("schema", "", "Specific schema to list (optional)")
 }

@@ -67,10 +67,10 @@ func TestValidateConfig(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "valid config with files",
+			name: "valid config with connection strings",
 			config: &Config{
-				SourceFile: "source.conn",
-				DestFile:   "dest.conn",
+				SourceConn: "postgres://user:pass@source:5432/db",
+				DestConn:   "postgres://user:pass@dest:5432/db",
 				Parallel:   1,
 				BatchSize:  100,
 			},
@@ -382,31 +382,31 @@ func TestValidateConfig_EdgeCases(t *testing.T) {
 }
 
 func TestCopier_WebModeIntegration(t *testing.T) {
-config := &Config{
-SourceConn: "test source",
-DestConn:   "test dest",
-Parallel:   2,
-BatchSize:  500,
-OutputMode: "web",
-}
+	config := &Config{
+		SourceConn: "test source",
+		DestConn:   "test dest",
+		Parallel:   2,
+		BatchSize:  500,
+		OutputMode: "web",
+	}
 
-// Test that NewWithWebPort creates a copier for web mode
-// Note: We cannot actually start the web server in tests without a real port,
-// but we can test the configuration
-copyState := state.NewCopyState("test-web-operation", *config)
-copier := &Copier{
-config:           config,
-state:            copyState,
-tablesInProgress: make(map[string]bool),
-}
+	// Test that NewWithWebPort creates a copier for web mode
+	// Note: We cannot actually start the web server in tests without a real port,
+	// but we can test the configuration
+	copyState := state.NewCopyState("test-web-operation", *config)
+	copier := &Copier{
+		config:           config,
+		state:            copyState,
+		tablesInProgress: make(map[string]bool),
+	}
 
-// Test that the display mode is correctly identified as web
-if copier.getDisplayMode() != DisplayModeWeb {
-t.Errorf("Expected DisplayModeWeb, got %v", copier.getDisplayMode())
-}
+	// Test that the display mode is correctly identified as web
+	if copier.getDisplayMode() != DisplayModeWeb {
+		t.Errorf("Expected DisplayModeWeb, got %v", copier.getDisplayMode())
+	}
 
-// Test that config has web output mode
-if config.OutputMode != "web" {
-t.Errorf("Expected OutputMode = 'web', got %v", config.OutputMode)
-}
+	// Test that config has web output mode
+	if config.OutputMode != "web" {
+		t.Errorf("Expected OutputMode = 'web', got %v", config.OutputMode)
+	}
 }

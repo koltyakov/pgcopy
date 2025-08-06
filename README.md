@@ -72,26 +72,27 @@ pgcopy copy --source "..." --dest "..." --skip-backup
 1. **Development Environment Data Refresh**
    ```bash
    # Refresh staging with production data
-   pgcopy copy --source-file prod.conn --dest-file staging.conn
+   pgcopy copy --source "postgres://user:pass@prod:5432/db" --dest "postgres://user:pass@staging:5432/db"
    ```
 
 2. **Database Migration Between Hosts**
    ```bash
    # Move database to new server (data-only)
-   pgcopy copy --source-file old-server.conn --dest-file new-server.conn
+   pgcopy copy --source "postgres://user:pass@old-server:5432/db" --dest "postgres://user:pass@new-server:5432/db"
    ```
 
 3. **Subset Data Synchronization**
    ```bash
    # Sync only specific tables
-   pgcopy copy --source-file prod.conn --dest-file dev.conn \
+   pgcopy copy --source "postgres://user:pass@prod:5432/db" --dest "postgres://user:pass@dev:5432/db" \
      --include-tables "public.users,public.orders,public.products"
    ```
 
 4. **Cross-Cloud Data Transfer**
    ```bash
    # Transfer between cloud providers or regions
-   pgcopy copy --source-file aws-db.conn --dest-file gcp-db.conn --parallel 8
+   pgcopy copy --source "postgres://user:pass@aws-rds:5432/prod_db" \
+     --dest "postgres://user:pass@gcp-sql:5432/prod_db" --parallel 8
    ```
 
 ## Features
@@ -149,13 +150,14 @@ pgcopy copy \
 
 ### Using Configuration Files
 
-Create connection configuration files:
+For convenience, you can save connection strings to files and reference them:
 
 ```bash
 echo "postgres://user:password@source-host:5432/source_db" > source.conn
 echo "postgres://user:password@dest-host:5432/dest_db" > dest.conn
 
-pgcopy copy --source-file source.conn --dest-file dest.conn
+# Use the connection strings directly
+pgcopy copy --source "$(cat source.conn)" --dest "$(cat dest.conn)"
 ```
 
 ### Advanced Options
@@ -290,8 +292,8 @@ pgcopy copy \
 
 # Useful for automated environments
 pgcopy copy \
-  --source-file prod.conn \
-  --dest-file staging.conn \
+  --source "postgres://user:pass@prod:5432/db" \
+  --dest "postgres://user:pass@staging:5432/db" \
   --skip-backup \
   --parallel 8
 ```
@@ -308,8 +310,6 @@ Copy data from source to destination database.
 
 - `--source, -s`: Source database connection string
 - `--dest, -d`: Destination database connection string
-- `--source-file`: Source database connection config file
-- `--dest-file`: Destination database connection config file
 - `--parallel, -p`: Number of parallel workers (default: 4)
 - `--batch-size`: Batch size for data copying (default: 1000)
 - `--exclude-tables`: Tables to exclude from copying (comma-separated, supports wildcards: `temp_*,*_logs`)
@@ -325,7 +325,6 @@ List tables in a database with row counts and sizes.
 **Flags:**
 
 - `--source, -s`: Source database connection string
-- `--source-file`: Source database connection config file
 - `--schema`: Specific schema to list (optional)
 
 ### `version`

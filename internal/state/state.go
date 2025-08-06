@@ -60,8 +60,6 @@ type OperationConfig struct {
 	// Connection settings
 	SourceConn string `json:"sourceConn"`
 	DestConn   string `json:"destConn"`
-	SourceFile string `json:"sourceFile"`
-	DestFile   string `json:"destFile"`
 
 	// Operation settings
 	Parallel      int      `json:"parallel"`

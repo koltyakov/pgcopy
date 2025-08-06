@@ -63,18 +63,16 @@ Both databases must have the same schema structure.
 Examples:
   pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --dest "postgres://user:pass@localhost:5433/destdb"
   pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
-  pgcopy copy --source-file source.conn --dest-file dest.conn --batch-size 5000
-  pgcopy copy --source-file source.conn --dest-file dest.conn --output plain       # Plain mode for CI/headless (default)
-  pgcopy copy --source-file source.conn --dest-file dest.conn --output progress    # Progress bar mode
-  pgcopy copy --source-file source.conn --dest-file dest.conn --output interactive # Interactive mode with live table progress
-  pgcopy copy --source-file source.conn --dest-file dest.conn --output web         # Web interface mode with real-time monitoring
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --batch-size 5000
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output plain       # Plain mode for CI/headless (default)
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output progress    # Progress bar mode
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output interactive # Interactive mode with live table progress
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output web         # Web interface mode with real-time monitoring
   pgcopy copy -s "..." -d "..." --exclude-tables "temp_*,*_logs,*_cache"        # Exclude with wildcards
   pgcopy copy -s "..." -d "..." --include-tables "user_*,order_*"               # Include with wildcards`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		destConn, _ := cmd.Flags().GetString("dest")
-		sourceFile, _ := cmd.Flags().GetString("source-file")
-		destFile, _ := cmd.Flags().GetString("dest-file")
 		parallel, _ := cmd.Flags().GetInt("parallel")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
 		excludeTables, _ := cmd.Flags().GetStringSlice("exclude-tables")
@@ -102,8 +100,6 @@ Examples:
 		config := &copier.Config{
 			SourceConn:    sourceConn,
 			DestConn:      destConn,
-			SourceFile:    sourceFile,
-			DestFile:      destFile,
 			Parallel:      parallel,
 			BatchSize:     batchSize,
 			ExcludeTables: excludeTables,
@@ -189,8 +185,6 @@ func init() {
 
 	copyCmd.Flags().StringP("source", "s", "", "Source database connection string (postgres://user:pass@host:port/dbname)")
 	copyCmd.Flags().StringP("dest", "d", "", "Destination database connection string (postgres://user:pass@host:port/dbname)")
-	copyCmd.Flags().String("source-file", "", "Source database connection config file")
-	copyCmd.Flags().String("dest-file", "", "Destination database connection config file")
 	copyCmd.Flags().IntP("parallel", "p", 4, "Number of parallel workers")
 	copyCmd.Flags().Int("batch-size", 1000, "Batch size for data copying")
 	copyCmd.Flags().StringSlice("exclude-tables", []string{}, "Tables to exclude from copying (supports wildcards: temp_*,*_logs)")

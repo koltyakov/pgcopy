@@ -105,7 +105,7 @@ func NewWithWebPort(config *Config, webPort ...int) (*Copier, error) {
 	}
 
 	// Initialize web server if in web mode
-	if config.OutputMode == "web" {
+	if config.OutputMode == string(DisplayModeWeb) {
 		port := 8080 // Default port
 		if len(webPort) > 0 {
 			port = webPort[0]
@@ -135,14 +135,6 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 
 	// Connect to source database
 	sourceConnStr := config.SourceConn
-	if config.SourceFile != "" {
-		sourceConnStr, err = readConnectionFromFile(config.SourceFile)
-		if err != nil {
-			c.state.AddError("connection_error", fmt.Sprintf("Failed to read source file: %v", err), "copier", true, nil)
-			return nil, fmt.Errorf("failed to read source connection file: %w", err)
-		}
-	}
-
 	c.sourceDB, err = sql.Open("postgres", sourceConnStr)
 	if err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to source: %v", err), "copier", true, nil)
@@ -160,14 +152,6 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 
 	// Connect to destination database
 	destConnStr := config.DestConn
-	if config.DestFile != "" {
-		destConnStr, err = readConnectionFromFile(config.DestFile)
-		if err != nil {
-			c.state.AddError("connection_error", fmt.Sprintf("Failed to read dest file: %v", err), "copier", true, nil)
-			return nil, fmt.Errorf("failed to read destination connection file: %w", err)
-		}
-	}
-
 	c.destDB, err = sql.Open("postgres", destConnStr)
 	if err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to dest: %v", err), "copier", true, nil)
@@ -564,21 +548,6 @@ func (c *Copier) dryRun(tables []*TableInfo) error {
 	return nil
 }
 
-// Helper function to read connection string from file
-func readConnectionFromFile(filename string) (string, error) {
-	absPath, err := filepath.Abs(filename)
-	if err != nil {
-		return "", err
-	}
-
-	content, err := os.ReadFile(absPath) // #nosec G304 - reading user-specified configuration file
-	if err != nil {
-		return "", err
-	}
-
-	return string(content), nil
-}
-
 // updateProgress prints progress updates periodically
 func (c *Copier) updateProgress(rowsAdded int64) {
 	// Note: Don't directly manipulate c.state.Summary.SyncedRows here
@@ -643,11 +612,11 @@ func ValidateConfig(config *Config) error {
 		return err
 	}
 
-	if config.SourceConn == "" && config.SourceFile == "" {
-		return fmt.Errorf("either --source connection string or --source-file must be provided")
+	if config.SourceConn == "" {
+		return fmt.Errorf("--source connection string must be provided")
 	}
-	if config.DestConn == "" && config.DestFile == "" {
-		return fmt.Errorf("either --dest connection string or --dest-file must be provided")
+	if config.DestConn == "" {
+		return fmt.Errorf("--dest connection string must be provided")
 	}
 	if config.Parallel < 1 {
 		return fmt.Errorf("parallel workers must be at least 1")
@@ -822,10 +791,7 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 	fmt.Printf("This operation will OVERWRITE data in the destination database:\n\n")
 
 	// Show connection info (extract server, port, database details)
-	destConnDisplay, err := c.getConnectionDisplay()
-	if err != nil {
-		destConnDisplay = "connection details unavailable"
-	}
+	destConnDisplay := c.getConnectionDisplay()
 	fmt.Printf("🎯 Destination: %s\n", destConnDisplay)
 	fmt.Printf("📊 Tables to overwrite: %d (with data)\n", len(nonEmptyTables))
 	fmt.Printf("📈 Total rows to copy: %s\n", utils.FormatNumber(totalRows))
@@ -855,18 +821,10 @@ func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool
 }
 
 // getConnectionDisplay extracts and formats connection details for display
-func (c *Copier) getConnectionDisplay() (string, error) {
+func (c *Copier) getConnectionDisplay() string {
 	// Get the actual destination connection string
 	destConn := c.config.DestConn
-	if c.config.DestFile != "" {
-		// Read connection string from file
-		connStr, err := readConnectionFromFile(c.config.DestFile)
-		if err != nil {
-			return "", fmt.Errorf("failed to read connection file: %w", err)
-		}
-		destConn = strings.TrimSpace(connStr)
-	}
 
 	// Extract connection details from the connection string
-	return utils.ExtractConnectionDetails(destConn), nil
+	return utils.ExtractConnectionDetails(destConn)
 }
