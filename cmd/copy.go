@@ -79,7 +79,6 @@ Examples:
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
 		excludeTables, _ := cmd.Flags().GetStringSlice("exclude-tables")
 		includeTables, _ := cmd.Flags().GetStringSlice("include-tables")
-		resume, _ := cmd.Flags().GetBool("resume")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		skipBackup, _ := cmd.Flags().GetBool("skip-backup")
 		output, _ := cmd.Flags().GetString("output")
@@ -109,7 +108,6 @@ Examples:
 			BatchSize:     batchSize,
 			ExcludeTables: excludeTables,
 			IncludeTables: includeTables,
-			Resume:        resume,
 			DryRun:        dryRun,
 			SkipBackup:    skipBackup,
 			OutputMode:    string(displayMode),
@@ -197,7 +195,6 @@ func init() {
 	copyCmd.Flags().Int("batch-size", 1000, "Batch size for data copying")
 	copyCmd.Flags().StringSlice("exclude-tables", []string{}, "Tables to exclude from copying (supports wildcards: temp_*,*_logs)")
 	copyCmd.Flags().StringSlice("include-tables", []string{}, "Tables to include in copying (supports wildcards: user_*,*_data)")
-	copyCmd.Flags().Bool("resume", false, "Resume from previous incomplete copy")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("skip-backup", false, "Skip confirmation dialog for data overwrite")
 	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface)")

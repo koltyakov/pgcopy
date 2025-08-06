@@ -9,7 +9,7 @@ import (
 
 // CopyState represents the complete state of a pgcopy operation
 type CopyState struct {
-	mu        sync.RWMutex
+	mu sync.RWMutex
 	// Management fields
 	listeners []Listener
 
@@ -68,7 +68,6 @@ type OperationConfig struct {
 	BatchSize     int      `json:"batchSize"`
 	IncludeTables []string `json:"includeTables"`
 	ExcludeTables []string `json:"excludeTables"`
-	Resume        bool     `json:"resume"`
 	DryRun        bool     `json:"dryRun"`
 	SkipBackup    bool     `json:"skipBackup"`
 	OutputMode    string   `json:"outputMode"`

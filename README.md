@@ -52,7 +52,7 @@ pgcopy copy --source "..." --dest "..." --skip-backup
 
 - Performance: Parallel processing often outperforms serial dump/restore operations
 - Foreign Key Handling: Automatically manages complex FK constraints without manual intervention
-- Flexibility: Table-level filtering and resume capabilities
+- Flexibility: Table-level filtering capabilities
 - Progress Tracking: Real-time progress monitoring with detailed logging
 
 #### vs. ETL Tools
@@ -101,7 +101,7 @@ pgcopy copy --source "..." --dest "..." --skip-backup
 - Progress Tracking: Real-time progress monitoring with visual progress bar enabled by default (stays fixed at top while logs scroll below)
 - Flexible Configuration: Support for connection strings, config files, and command-line options
 - Table Filtering: Include/exclude specific tables from the copy operation
-- Resume Capability: Resume interrupted copy operations
+- Data Safety: Comprehensive validation and confirmation dialogs
 - Dry Run Mode: Preview what will be copied without actually copying data
 - Transaction Safety: Uses transactions to ensure data consistency
 - Advanced Foreign Key Handling: Automatically detects and manages foreign key constraints, including circular dependencies
@@ -314,7 +314,6 @@ Copy data from source to destination database.
 - `--batch-size`: Batch size for data copying (default: 1000)
 - `--exclude-tables`: Tables to exclude from copying (comma-separated, supports wildcards: `temp_*,*_logs`)
 - `--include-tables`: Tables to include in copying (comma-separated, supports wildcards: `user_*,*_data`)
-- `--resume`: Resume from previous incomplete copy
 - `--dry-run`: Show what would be copied without actually copying
 - `--skip-backup`: Skip confirmation dialog for data overwrite (use with caution)
 - `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress)

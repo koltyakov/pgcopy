@@ -270,9 +270,8 @@ Releases are automated via GitHub Actions:
 
 ### Potential Improvements
 
-1. Resume Capability: Implement checkpoint-based resume functionality
-2. Schema Validation: Automatic schema compatibility checking
-3. Adaptive Batching: Dynamic batch size adjustment
+1. Schema Validation: Automatic schema compatibility checking
+2. Adaptive Batching: Dynamic batch size adjustment
 4. Connection Multiplexing: Advanced connection management
 
 ## Conclusion

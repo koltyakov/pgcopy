@@ -21,7 +21,7 @@ It performs data-only copying and is optimized for performance with features lik
 - Parallel table copying
 - Transaction batching
 - Progress monitoring
-- Resume capability`,
+- Advanced progress tracking`,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.
