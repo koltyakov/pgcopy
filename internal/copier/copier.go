@@ -72,7 +72,6 @@ type Copier struct {
 	fileLogger         *log.Logger         // Logger for copy.log file
 	logFile            *os.File            // File handle for copy.log
 	logger             *utils.SimpleLogger // Utils logger for colorized output
-	tablesInProgress   map[string]bool     // Track which tables are currently being processed
 	interactiveMode    bool                // Whether to use interactive display
 	interactiveDisplay *InteractiveDisplay // Interactive progress display
 	webServer          *server.WebServer   // Web server for web mode
@@ -122,9 +121,8 @@ func NewWithWebPort(config *Config, webPort ...int) (*Copier, error) {
 // NewWithState creates a new Copier instance with an existing state
 func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c := &Copier{
-		config:           config,
-		state:            copyState,
-		tablesInProgress: make(map[string]bool),
+		config: config,
+		state:  copyState,
 	}
 
 	var err error
@@ -559,25 +557,19 @@ func (c *Copier) updateProgress(rowsAdded int64) {
 
 // setTableInProgress marks a table as currently being processed
 func (c *Copier) setTableInProgress(schema, name string) {
-	tableKey := fmt.Sprintf("%s.%s", schema, name)
-	c.tablesInProgress[tableKey] = true
+	c.state.UpdateTableStatus(schema, name, state.TableStatusCopying)
 }
 
 // removeTableFromProgress removes a table from the in-progress list
-func (c *Copier) removeTableFromProgress(schema, name string) {
-	tableKey := fmt.Sprintf("%s.%s", schema, name)
-	delete(c.tablesInProgress, tableKey)
-
-	// Update interactive display if enabled
-	if c.interactiveMode && c.interactiveDisplay != nil {
-		c.interactiveDisplay.CompleteTable(schema, name, true)
-	}
+func (c *Copier) removeTableFromProgress(_, _ string) {
+	// Note: Don't update status here - it should already be set to either
+	// TableStatusCompleted or TableStatusFailed in the calling code
+	// Also don't update interactive display - it's handled in the calling code
 }
 
 // startTableInInteractive starts tracking a table in interactive mode
 func (c *Copier) startTableInInteractive(table *TableInfo) {
-	tableKey := fmt.Sprintf("%s.%s", table.Schema, table.Name)
-	c.tablesInProgress[tableKey] = true
+	c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCopying)
 
 	// Update interactive display if enabled
 	if c.interactiveMode && c.interactiveDisplay != nil {
@@ -598,9 +590,17 @@ func (c *Copier) updateTableProgress(schema, name string, copiedRows int64) {
 
 // getTablesInProgress returns a slice of table names currently being processed
 func (c *Copier) getTablesInProgress() []string {
-	tables := make([]string, 0, len(c.tablesInProgress))
-	for table := range c.tablesInProgress {
-		tables = append(tables, utils.HighlightTableName(strings.Split(table, ".")[0], strings.Split(table, ".")[1]))
+	tableNames := c.state.GetTablesByStatus(state.TableStatusCopying)
+
+	// Format with highlighting
+	tables := make([]string, 0, len(tableNames))
+	for _, tableName := range tableNames {
+		parts := strings.Split(tableName, ".")
+		if len(parts) == 2 {
+			tables = append(tables, utils.HighlightTableName(parts[0], parts[1]))
+		} else {
+			tables = append(tables, tableName)
+		}
 	}
 	return tables
 }
@@ -675,7 +675,7 @@ func (c *Copier) initializeDisplayMode(tables []*TableInfo, totalRows int64) {
 	case DisplayModeInteractive:
 		// Use interactive mode
 		c.interactiveMode = true
-		c.interactiveDisplay = NewInteractiveDisplay(len(tables))
+		c.interactiveDisplay = NewInteractiveDisplay(c.state)
 		c.interactiveDisplay.SetTotalRows(totalRows) // Set total rows for overall progress
 		c.interactiveDisplay.Start()
 		c.logger = utils.NewSilentLogger() // Silent logger for interactive mode

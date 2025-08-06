@@ -7,43 +7,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/koltyakov/pgcopy/internal/state"
 	"github.com/koltyakov/pgcopy/internal/utils"
-)
-
-// TableProgress represents the progress of a single table
-type TableProgress struct {
-	Schema     string
-	Name       string
-	RowCount   int64
-	CopiedRows int64
-	StartTime  time.Time
-	EndTime    *time.Time
-	Status     TableStatus
-	Order      int // Order in which table was started or completed
-}
-
-// TableStatus represents the current status of a table
-type TableStatus int
-
-// Table status constants
-const (
-	TableStatusPending    TableStatus = iota // Table is waiting to be processed
-	TableStatusInProgress                    // Table is currently being copied
-	TableStatusCompleted                     // Table has been successfully copied
-	TableStatusFailed                        // Table copying failed
 )
 
 // InteractiveDisplay manages the interactive CLI display
 type InteractiveDisplay struct {
 	mu              sync.RWMutex
-	tables          map[string]*TableProgress
-	totalRows       int64
-	totalCopiedRows int64
-	totalTables     int64
-	completedTables int64
+	state           *state.CopyState
 	startTime       time.Time
 	maxDisplayLines int
-	orderCounter    int
 	spinnerIndex    int
 	isActive        bool
 }
@@ -51,76 +24,37 @@ type InteractiveDisplay struct {
 var spinnerChars = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // NewInteractiveDisplay creates a new interactive display
-func NewInteractiveDisplay(totalTables int) *InteractiveDisplay {
+func NewInteractiveDisplay(state *state.CopyState) *InteractiveDisplay {
 	return &InteractiveDisplay{
-		tables:          make(map[string]*TableProgress),
-		totalTables:     int64(totalTables),
-		completedTables: 0,
+		state:           state,
 		maxDisplayLines: 20, // Increased to accommodate all in-progress tables
 		spinnerIndex:    0,
 		isActive:        false,
 	}
 }
 
-// StartTable marks a table as started
-func (d *InteractiveDisplay) StartTable(schema, name string, rowCount int64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	tableKey := fmt.Sprintf("%s.%s", schema, name)
-	d.orderCounter++
-	d.tables[tableKey] = &TableProgress{
-		Schema:    schema,
-		Name:      name,
-		RowCount:  rowCount,
-		StartTime: time.Now(),
-		Status:    TableStatusInProgress,
-		Order:     d.orderCounter,
-	}
+// StartTable is now a no-op since the state system handles this
+func (d *InteractiveDisplay) StartTable(_, _ string, _ int64) {
+	// Table state is now managed by the global state system
+	// This method is kept for compatibility but does nothing
 }
 
-// SetTotalRows sets the total number of rows across all tables
-func (d *InteractiveDisplay) SetTotalRows(totalRows int64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.totalRows = totalRows
+// SetTotalRows is now a no-op since the state system handles this
+func (d *InteractiveDisplay) SetTotalRows(_ int64) {
+	// Total rows are now calculated from the global state
+	// This method is kept for compatibility but does nothing
 }
 
-// UpdateTableProgress updates the progress of a table
-func (d *InteractiveDisplay) UpdateTableProgress(schema, name string, copiedRows int64) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	tableKey := fmt.Sprintf("%s.%s", schema, name)
-	if table, exists := d.tables[tableKey]; exists {
-		oldCopied := table.CopiedRows
-		table.CopiedRows = copiedRows
-
-		// Update total copied rows
-		d.totalCopiedRows += (copiedRows - oldCopied)
-	}
+// UpdateTableProgress is now a no-op since the state system handles this
+func (d *InteractiveDisplay) UpdateTableProgress(_, _ string, _ int64) {
+	// Table progress is now managed by the global state system
+	// This method is kept for compatibility but does nothing
 }
 
-// CompleteTable marks a table as completed
-func (d *InteractiveDisplay) CompleteTable(schema, name string, success bool) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-
-	tableKey := fmt.Sprintf("%s.%s", schema, name)
-	if table, exists := d.tables[tableKey]; exists {
-		now := time.Now()
-		table.EndTime = &now
-
-		if success {
-			table.Status = TableStatusCompleted
-			d.completedTables++
-			// Update order for completed tables to sort them properly
-			d.orderCounter++
-			table.Order = d.orderCounter
-		} else {
-			table.Status = TableStatusFailed
-		}
-	}
+// CompleteTable is now a no-op since the state system handles this
+func (d *InteractiveDisplay) CompleteTable(_, _ string, _ bool) {
+	// Table completion is now managed by the global state system
+	// This method is kept for compatibility but does nothing
 }
 
 // Start begins the interactive display loop
@@ -169,13 +103,24 @@ func (d *InteractiveDisplay) render() {
 	// Move to top of our display area
 	d.clearScreen()
 
-	// Add header with table status
-	fmt.Printf("Tables: %d/%d completed\n\n",
-		d.completedTables,
-		d.totalTables)
+	// Get all tables from state (thread-safe)
+	allTables := d.state.GetAllTables()
 
-	// Get sorted tables (completed first, then in-progress, ordered by their order number)
-	sortedTables := d.getSortedTables()
+	// Count tables by status
+	completedTables := 0
+	for _, table := range allTables {
+		if table.Status == state.TableStatusCompleted {
+			completedTables++
+		}
+	}
+
+	totalTables := len(allTables)
+
+	// Add header with table status
+	fmt.Printf("Tables: %d/%d completed\n\n", completedTables, totalTables)
+
+	// Get sorted tables
+	sortedTables := d.getSortedTablesFromCopy(allTables)
 
 	// Show tables - prioritize showing ALL in-progress tables
 	completedShown := 0
@@ -184,10 +129,10 @@ func (d *InteractiveDisplay) render() {
 	// First pass: Show all in-progress and failed tables (no limits)
 	for _, table := range sortedTables {
 		switch table.Status {
-		case TableStatusInProgress:
+		case state.TableStatusCopying:
 			d.renderInProgressTable(table)
 			inProgressShown++
-		case TableStatusFailed:
+		case state.TableStatusFailed:
 			d.renderFailedTable(table)
 		}
 	}
@@ -195,14 +140,14 @@ func (d *InteractiveDisplay) render() {
 	// Second pass: Show completed tables up to remaining display space
 	remainingLines := d.maxDisplayLines - 4 - inProgressShown // Reserve space for header, progress bar, and in-progress tables
 	for _, table := range sortedTables {
-		if table.Status == TableStatusCompleted && completedShown < remainingLines && completedShown < 15 {
+		if table.Status == state.TableStatusCompleted && completedShown < remainingLines && completedShown < 15 {
 			d.renderCompletedTable(table)
 			completedShown++
 		}
 	}
 
 	// Show summary if we have hidden tables
-	hiddenCompleted := int(d.completedTables) - completedShown
+	hiddenCompleted := completedTables - completedShown
 	if hiddenCompleted > 0 {
 		fmt.Printf("  %s %d more tables completed...\n",
 			utils.Colorize(utils.ColorGreen, "✓"), hiddenCompleted)
@@ -214,44 +159,49 @@ func (d *InteractiveDisplay) render() {
 	d.spinnerIndex = (d.spinnerIndex + 1) % len(spinnerChars)
 }
 
-// getSortedTables returns tables sorted by completion status and order
-func (d *InteractiveDisplay) getSortedTables() []*TableProgress {
-	tables := make([]*TableProgress, 0, len(d.tables))
-	for _, table := range d.tables {
-		tables = append(tables, table)
-	}
-
+// getSortedTablesFromCopy returns tables sorted by completion status
+func (d *InteractiveDisplay) getSortedTablesFromCopy(tables []state.TableState) []state.TableState {
 	sort.Slice(tables, func(i, j int) bool {
 		// Completed tables first, then in-progress, then failed
 		if tables[i].Status != tables[j].Status {
-			if tables[i].Status == TableStatusCompleted {
+			if tables[i].Status == state.TableStatusCompleted {
 				return true
 			}
-			if tables[j].Status == TableStatusCompleted {
+			if tables[j].Status == state.TableStatusCompleted {
 				return false
 			}
-			if tables[i].Status == TableStatusInProgress {
+			if tables[i].Status == state.TableStatusCopying {
 				return true
 			}
-			if tables[j].Status == TableStatusInProgress {
+			if tables[j].Status == state.TableStatusCopying {
 				return false
 			}
 		}
 
-		// Within same status, sort by order (most recent first for completed, oldest first for in-progress)
-		if tables[i].Status == TableStatusCompleted {
-			return tables[i].Order > tables[j].Order // Most recent completed first
+		// Within same status, sort by start time
+		if tables[i].StartTime != nil && tables[j].StartTime != nil {
+			if tables[i].Status == state.TableStatusCompleted {
+				// Most recent completed first
+				return tables[i].StartTime.After(*tables[j].StartTime)
+			}
+			// Oldest in-progress first
+			return tables[i].StartTime.Before(*tables[j].StartTime)
 		}
-		return tables[i].Order < tables[j].Order // Oldest in-progress first
+
+		// Fallback to name sorting
+		return strings.Compare(tables[i].FullName, tables[j].FullName) < 0
 	})
 
 	return tables
 }
 
 // renderCompletedTable renders a completed table
-func (d *InteractiveDisplay) renderCompletedTable(table *TableProgress) {
-	duration := table.EndTime.Sub(table.StartTime)
-	rowsFormatted := utils.FormatNumber(table.RowCount)
+func (d *InteractiveDisplay) renderCompletedTable(table state.TableState) {
+	var duration time.Duration
+	if table.StartTime != nil && table.EndTime != nil {
+		duration = table.EndTime.Sub(*table.StartTime)
+	}
+	rowsFormatted := utils.FormatNumber(table.TotalRows)
 
 	fmt.Printf("  %s %s (%s rows) - %s\n",
 		utils.Colorize(utils.ColorGreen, "✓"),
@@ -261,19 +211,22 @@ func (d *InteractiveDisplay) renderCompletedTable(table *TableProgress) {
 }
 
 // renderInProgressTable renders an in-progress table
-func (d *InteractiveDisplay) renderInProgressTable(table *TableProgress) {
+func (d *InteractiveDisplay) renderInProgressTable(table state.TableState) {
 	spinner := spinnerChars[d.spinnerIndex]
-	duration := time.Since(table.StartTime)
+	var duration time.Duration
+	if table.StartTime != nil {
+		duration = time.Since(*table.StartTime)
+	}
 
 	var progressStr string
-	if table.RowCount > 0 {
-		percentage := float64(table.CopiedRows) / float64(table.RowCount) * 100
+	if table.TotalRows > 0 {
+		percentage := float64(table.SyncedRows) / float64(table.TotalRows) * 100
 		progressStr = fmt.Sprintf("%.1f%% (%s/%s)",
 			percentage,
-			utils.FormatNumber(table.CopiedRows),
-			utils.FormatNumber(table.RowCount))
+			utils.FormatNumber(table.SyncedRows),
+			utils.FormatNumber(table.TotalRows))
 	} else {
-		progressStr = fmt.Sprintf("%s rows", utils.FormatNumber(table.CopiedRows))
+		progressStr = fmt.Sprintf("%s rows", utils.FormatNumber(table.SyncedRows))
 	}
 
 	fmt.Printf("  %s %s %s - %s\n",
@@ -284,8 +237,11 @@ func (d *InteractiveDisplay) renderInProgressTable(table *TableProgress) {
 }
 
 // renderFailedTable renders a failed table
-func (d *InteractiveDisplay) renderFailedTable(table *TableProgress) {
-	duration := time.Since(table.StartTime)
+func (d *InteractiveDisplay) renderFailedTable(table state.TableState) {
+	var duration time.Duration
+	if table.StartTime != nil {
+		duration = time.Since(*table.StartTime)
+	}
 
 	fmt.Printf("  %s %s - %s\n",
 		utils.Colorize(utils.ColorRed, "✗"),
@@ -297,16 +253,24 @@ func (d *InteractiveDisplay) renderFailedTable(table *TableProgress) {
 func (d *InteractiveDisplay) renderProgressBar() {
 	elapsed := time.Since(d.startTime)
 
+	// Calculate totals from state
+	allTables := d.state.GetAllTables()
+	var totalRows, totalCopiedRows int64
+	for _, table := range allTables {
+		totalRows += table.TotalRows
+		totalCopiedRows += table.SyncedRows
+	}
+
 	// Calculate progress
 	var percentage float64
-	if d.totalRows > 0 {
-		percentage = float64(d.totalCopiedRows) / float64(d.totalRows) * 100
+	if totalRows > 0 {
+		percentage = float64(totalCopiedRows) / float64(totalRows) * 100
 	}
 
 	// Calculate speed
 	var speedStr string
 	if elapsed.Seconds() > 0 {
-		rowsPerSecond := float64(d.totalCopiedRows) / elapsed.Seconds()
+		rowsPerSecond := float64(totalCopiedRows) / elapsed.Seconds()
 		speedStr = fmt.Sprintf(" (%s/s)", utils.FormatNumber(int64(rowsPerSecond)))
 	}
 
@@ -320,8 +284,8 @@ func (d *InteractiveDisplay) renderProgressBar() {
 	fmt.Printf("Overall Progress: %.1f%% [%s] %s/%s rows%s\n",
 		percentage,
 		utils.Colorize(utils.ColorGreen, bar),
-		utils.FormatNumber(d.totalCopiedRows),
-		utils.FormatNumber(d.totalRows),
+		utils.FormatNumber(totalCopiedRows),
+		utils.FormatNumber(totalRows),
 		speedStr)
 
 	fmt.Printf("Elapsed: %s\n",

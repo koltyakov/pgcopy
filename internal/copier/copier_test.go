@@ -300,9 +300,8 @@ func TestCopier_StateIntegration(t *testing.T) {
 
 	copyState := state.NewCopyState("test-operation", *config)
 	copier := &Copier{
-		config:           config,
-		state:            copyState,
-		tablesInProgress: make(map[string]bool),
+		config: config,
+		state:  copyState,
 	}
 
 	// Test initial state
@@ -314,15 +313,27 @@ func TestCopier_StateIntegration(t *testing.T) {
 		t.Errorf("Expected SyncedRows = 0, got %d", copier.state.Summary.SyncedRows)
 	}
 
-	// Test progress updates
+	// Test that updateProgress doesn't directly update SyncedRows
+	// (The state system handles this through UpdateTableProgress calls)
+	initialRows := copier.state.Summary.SyncedRows
 	copier.updateProgress(100)
-	if copier.state.Summary.SyncedRows != 100 {
-		t.Errorf("Expected SyncedRows = 100, got %d", copier.state.Summary.SyncedRows)
+	if copier.state.Summary.SyncedRows != initialRows {
+		t.Errorf("updateProgress should not directly update SyncedRows, expected %d, got %d", initialRows, copier.state.Summary.SyncedRows)
 	}
 
-	copier.updateProgress(50)
+	// Test actual progress updates through the state system
+	// First add a table to track progress for
+	copier.state.AddTable("test_schema", "test_table", 1000)
+
+	// Update progress through the proper state method
+	copier.state.UpdateTableProgress("test_schema", "test_table", 100)
+	if copier.state.Summary.SyncedRows != 100 {
+		t.Errorf("Expected SyncedRows = 100 after UpdateTableProgress, got %d", copier.state.Summary.SyncedRows)
+	}
+
+	copier.state.UpdateTableProgress("test_schema", "test_table", 150)
 	if copier.state.Summary.SyncedRows != 150 {
-		t.Errorf("Expected SyncedRows = 150, got %d", copier.state.Summary.SyncedRows)
+		t.Errorf("Expected SyncedRows = 150 after UpdateTableProgress, got %d", copier.state.Summary.SyncedRows)
 	}
 
 	// Test display mode
@@ -395,9 +406,8 @@ func TestCopier_WebModeIntegration(t *testing.T) {
 	// but we can test the configuration
 	copyState := state.NewCopyState("test-web-operation", *config)
 	copier := &Copier{
-		config:           config,
-		state:            copyState,
-		tablesInProgress: make(map[string]bool),
+		config: config,
+		state:  copyState,
 	}
 
 	// Test that the display mode is correctly identified as web

@@ -463,3 +463,27 @@ func (s *CopyState) updateSummary() {
 		}
 	}
 }
+
+// GetTablesByStatus returns a slice of table names that have the specified status
+func (s *CopyState) GetTablesByStatus(status TableStatus) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var tables []string
+	for _, table := range s.Tables {
+		if table.Status == status {
+			tables = append(tables, fmt.Sprintf("%s.%s", table.Schema, table.Name))
+		}
+	}
+	return tables
+}
+
+// GetAllTables returns a copy of all tables in the state
+func (s *CopyState) GetAllTables() []TableState {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	tables := make([]TableState, len(s.Tables))
+	copy(tables, s.Tables)
+	return tables
+}
