@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL Tables Copy Tool</title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <style>
+    :root {
+      --primary-color: #2563eb;
+      --secondary-color: #1e40af;
+      --success-color: #059669;
+      --warning-color: #d97706;
+      --error-color: #dc2626;
+      --gray-50: #f9fafb;
+      --gray-100: #f3f4f6;
+      --gray-200: #e5e7eb;
+      --gray-300: #d1d5db;
+      --gray-400: #9ca3af;
+      --gray-500: #6b7280;
+      --gray-600: #4b5563;
+      --gray-700: #374151;
+      --gray-800: #1f2937;
+      --gray-900: #111827;
+    }
+    
+    * { 
+      margin: 0; 
+      padding: 0; 
+      box-sizing: border-box; 
+    }
+    
+    body { 
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter', Arial, sans-serif; 
+      background: linear-gradient(135deg, var(--gray-50) 0%, var(--gray-100) 100%);
+      min-height: 100vh;
+      color: var(--gray-800);
+      line-height: 1.6;
+    }
+    
+    .container { 
+      max-width: 1400px; 
+      margin: 0 auto; 
+      padding: 2rem; 
+      min-height: 100vh;
+    }
+    
+    .header {
+      background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+      border: 1px solid var(--gray-200);
+      border-radius: 16px;
+      padding: 2rem;
+      margin-bottom: 2rem;
+      box-shadow: 
+        0 4px 6px -1px rgba(0, 0, 0, 0.1),
+        0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+    
+    .header h1 { 
+      color: var(--gray-900); 
+      font-size: 2rem; 
+      font-weight: 700;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    
+    .header-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 1.25rem;
+    }
+    
+    .subtitle {
+      color: var(--gray-600);
+      font-size: 1rem;
+      margin-top: 0.25rem;
+    }
+    
+    .header-right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 0.5rem;
+    }
+    
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+    
+    .status-initializing { 
+      background: #fef3c7; 
+      color: #92400e; 
+      border: 1px solid #fcd34d;
+    }
+    .status-copying { 
+      background: #dbeafe; 
+      color: #1e40af; 
+    }
+    .status-completed { 
+      background: #d1fae5; 
+      color: #065f46; 
+    }
+    .status-failed { 
+      background: #fee2e2; 
+      color: #991b1b; 
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 2s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .progress-summary {
+      font-size: 0.875rem;
+      color: var(--gray-600);
+      margin-top: 0.25rem;
+    }
+    
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+      margin-bottom: 2rem;
+    }
+    
+    .card {
+      background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+      border: 1px solid var(--gray-200);
+      border-radius: 16px;
+      padding: 1.5rem;
+      box-shadow: 
+        0 4px 6px -1px rgba(0, 0, 0, 0.1),
+        0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      transition: all 0.3s ease;
+    }
+    
+    .card:hover {
+      box-shadow: 
+        0 10px 15px -3px rgba(0, 0, 0, 0.1),
+        0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    }
+    
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--gray-200);
+    }
+    
+    .card-icon {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      color: white;
+    }
+    
+    .config-icon { background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)); }
+    .stats-icon { background: linear-gradient(135deg, var(--success-color), #10b981); }
+    .tables-icon { background: linear-gradient(135deg, var(--warning-color), #f59e0b); }
+    
+    .card h2 {
+      color: var(--gray-900);
+      font-size: 1.125rem;
+      font-weight: 600;
+      margin: 0;
+    }
+    
+    .tables-section {
+      grid-column: 1 / -1;
+      display: flex;
+      flex-direction: column;
+    }
+    
+    .config-item, .stat-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--gray-100);
+    }
+    
+    .config-item:last-child, .stat-item:last-child {
+      border-bottom: none;
+    }
+    
+    .config-label, .stat-label {
+      font-weight: 500;
+      color: var(--gray-600);
+      font-size: 0.875rem;
+    }
+    
+    .config-value, .stat-value {
+      color: var(--gray-900);
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+      font-size: 0.875rem;
+      background: var(--gray-50);
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      border: 1px solid var(--gray-200);
+    }
+    
+    .stat-value {
+      font-weight: 600;
+      font-size: 1.125rem;
+      background: none;
+      border: none;
+      padding: 0;
+    }
+    
+    .stat-value.progress-stat {
+      color: var(--primary-color);
+      font-weight: 700;
+    }
+    
+    .stat-value.error-stat {
+      color: var(--error-color);
+      font-weight: 700;
+    }
+    
+    .stat-value.data-stat {
+      color: var(--success-color);
+      font-weight: 700;
+    }
+    
+    .stat-value.time-stat {
+      color: var(--gray-700);
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+      font-weight: 600;
+    }
+    
+    .table-container {
+      background: white;
+      border: 1px solid var(--gray-200);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-top: 1rem;
+    }
+    
+    .table-controls {
+      display: flex;
+      gap: 1rem;
+      align-items: center;
+      margin-left: auto;
+    }
+    
+    .filter-select, .search-input {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid var(--gray-300);
+      border-radius: 8px;
+      font-size: 0.875rem;
+      background: white;
+      color: var(--gray-700);
+      transition: all 0.2s ease;
+    }
+    
+    .filter-select:focus, .search-input:focus {
+      outline: none;
+      border-color: var(--primary-color);
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    
+    .search-input {
+      min-width: 200px;
+    }
+    
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.875rem;
+    }
+    
+    th, td {
+      padding: 1rem 0.75rem;
+      text-align: left;
+    }
+    
+    th {
+      background: var(--gray-50);
+      font-weight: 600;
+      color: var(--gray-700);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .table-row {
+      transition: all 0.2s ease;
+    }
+    
+    .table-row:hover {
+      background: var(--gray-50);
+    }
+    
+    .status-cell {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    
+    .status-icon-pending { color: var(--warning-color); }
+    .status-icon-copying { color: var(--primary-color); }
+    .status-icon-completed { color: var(--success-color); }
+    .status-icon-failed { color: var(--error-color); }
+    
+    .progress-container {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      min-width: 100px;
+    }
+    
+    .progress-bar {
+      flex: 1;
+      height: 6px;
+      background: var(--gray-200);
+      border-radius: 3px;
+      overflow: hidden;
+      position: relative;
+    }
+    
+    .progress-bar > div {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+      border-radius: 3px;
+      transition: width 0.3s ease;
+      position: relative;
+    }
+    
+    .progress-bar-animated > div::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.4),
+        transparent
+      );
+      animation: shimmer 2s infinite;
+    }
+    
+    @keyframes shimmer {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(100%); }
+    }
+    
+    .progress-text {
+      font-size: 0.75rem;
+      color: var(--gray-600);
+      font-weight: 500;
+      min-width: 35px;
+      text-align: right;
+    }
+    
+    /* Responsive Design */
+    @media (max-width: 768px) {
+      .container {
+        padding: 1rem;
+      }
+      
+      .header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+      }
+      
+      .header-right {
+        align-items: flex-start;
+      }
+      
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .table-controls {
+        flex-direction: column;
+        align-items: stretch;
+      }
+      
+      .search-input {
+        min-width: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="header-left">
+        <div class="header-icon">
+          <i class="fas fa-database"></i>
+        </div>
+        <div>
+          <h1>PGCopy Monitor</h1>
+          <p class="subtitle">PostgreSQL Tables Copy Tool</p>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="status-badge" id="statusBadge">
+          <div class="status-dot"></div>
+          <span id="overallStatus">Initializing...</span>
+        </div>
+        <div class="progress-summary" id="progressSummary">0 / 0 tables</div>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon config-icon">
+            <i class="fas fa-cog"></i>
+          </div>
+          <h2>Configuration</h2>
+        </div>
+        <div id="configInfo">
+          <div class="config-item">
+            <span class="config-label">Parallel Workers:</span>
+            <span class="config-value" id="parallelWorkers">--</span>
+          </div>
+          <div class="config-item">
+            <span class="config-label">Batch Size:</span>
+            <span class="config-value" id="batchSize">--</span>
+          </div>
+          <div class="config-item">
+            <span class="config-label">Source:</span>
+            <span class="config-value" id="sourceConn">--</span>
+          </div>
+          <div class="config-item">
+            <span class="config-label">Destination:</span>
+            <span class="config-value" id="destConn">--</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon stats-icon">
+            <i class="fas fa-chart-line"></i>
+          </div>
+          <h2>Statistics</h2>
+        </div>
+        <div id="statsInfo">
+          <div class="stat-item">
+            <span class="stat-label">Tables Progress:</span>
+            <span class="stat-value progress-stat" id="tablesProgress">0 / 0</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Rows Transferred:</span>
+            <span class="stat-value data-stat" id="dataTransferred">0 rows</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Failed Tables:</span>
+            <span class="stat-value error-stat" id="failedTables">0</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Overall ETA:</span>
+            <span class="stat-value time-stat" id="overallETA">--</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Elapsed Time:</span>
+            <span class="stat-value time-stat" id="elapsedTime">00:00:00</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tables-section">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-icon tables-icon">
+            <i class="fas fa-table"></i>
+          </div>
+          <h2>Table Progress</h2>
+          <div class="table-controls">
+            <select id="statusFilter" class="filter-select">
+              <option value="">All Tables</option>
+              <option value="pending">Pending</option>
+              <option value="copying">In Progress</option>
+              <option value="completed">Completed</option>
+              <option value="failed">Failed</option>
+            </select>
+            <input type="text" id="searchInput" placeholder="Search tables..." class="search-input">
+          </div>
+        </div>
+        <div class="table-container">
+          <table id="tablesTable">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Table</th>
+                <th>Progress</th>
+                <th>Records</th>
+                <th>Speed</th>
+                <th>ETA</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    class PgcopyMonitor {
+      constructor() {
+        this.ws = null;
+        this.state = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+        this.completionAcked = false;
+        this.startTime = Date.now();
+        this.currentFilter = '';
+        this.currentSearch = '';
+        this.elapsedTimerInterval = null;
+        this.isCompleted = false;
+        this.connect();
+        this.setupEventListeners();
+        this.startElapsedTimer();
+      }
+
+      connect() {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = protocol + '//' + window.location.host + '/ws';
+        
+        this.ws = new WebSocket(wsUrl);
+        
+        this.ws.onopen = () => {
+          console.log('Connected to pgcopy WebSocket');
+          this.reconnectAttempts = 0;
+          this.updateConnectionStatus('Connected', 'copying');
+        };
+        
+        this.ws.onmessage = (event) => {
+          const data = JSON.parse(event.data);
+          this.handleStateUpdate(data);
+        };
+        
+        this.ws.onclose = () => {
+          console.log('Disconnected from pgcopy WebSocket');
+          this.updateConnectionStatus('Disconnected', 'failed');
+          this.attemptReconnect();
+        };
+        
+        this.ws.onerror = (error) => {
+          console.error('WebSocket error:', error);
+          this.updateConnectionStatus('Connection Error', 'failed');
+        };
+      }
+
+      attemptReconnect() {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+          this.reconnectAttempts++;
+          console.log('Attempting to reconnect... (' + this.reconnectAttempts + '/' + this.maxReconnectAttempts + ')');
+          setTimeout(() => this.connect(), 2000 * this.reconnectAttempts);
+        }
+      }
+
+      setupEventListeners() {
+        const statusFilter = document.getElementById('statusFilter');
+        const searchInput = document.getElementById('searchInput');
+        
+        if (statusFilter) {
+          statusFilter.addEventListener('change', (e) => {
+            this.currentFilter = e.target.value;
+            this.updateTablesDisplay();
+          });
+        }
+        
+        if (searchInput) {
+          searchInput.addEventListener('input', (e) => {
+            this.currentSearch = e.target.value;
+            this.updateTablesDisplay();
+          });
+        }
+      }
+
+      startElapsedTimer() {
+        this.elapsedTimerInterval = setInterval(() => {
+          if (!this.isCompleted) {
+            const elapsed = Date.now() - this.startTime;
+            const elapsedTimeElement = document.getElementById('elapsedTime');
+            if (elapsedTimeElement) {
+              elapsedTimeElement.textContent = this.formatDuration(elapsed);
+            }
+          }
+        }, 1000);
+      }
+
+      stopElapsedTimer() {
+        if (this.elapsedTimerInterval) {
+          clearInterval(this.elapsedTimerInterval);
+          this.elapsedTimerInterval = null;
+        }
+      }
+
+      handleStateUpdate(data) {
+        console.log('Received state update:', data);
+        if (data.type === 'state_snapshot') {
+          this.state = data.state;
+          console.log('State snapshot:', this.state);
+          this.updateUI();
+        } else if (data.type === 'state_event') {
+          this.handleStateEvent(data.event);
+        }
+        
+        if (this.state && (this.state.status === 'completed' || this.state.status === 'failed') && !this.completionAcked) {
+          this.sendCompletionAck();
+        }
+      }
+
+      sendCompletionAck() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({
+            type: 'completion_ack',
+            timestamp: Date.now()
+          }));
+          this.completionAcked = true;
+          console.log('Sent completion acknowledgment');
+        }
+      }
+
+      handleStateEvent(event) {
+        console.log('State event:', event);
+        this.updateUI();
+      }
+
+      updateUI() {
+        if (!this.state) return;
+
+        this.updateStatus();
+        this.updateConfiguration();
+        this.updateStatistics();
+        this.updateTablesDisplay();
+      }
+
+      updateStatus() {
+        const statusBadge = document.getElementById('statusBadge');
+        const overallStatus = document.getElementById('overallStatus');
+        const progressSummary = document.getElementById('progressSummary');
+        
+        if (!this.state || !this.state.tables) {
+          if (statusBadge) statusBadge.className = 'status-badge status-initializing';
+          if (overallStatus) overallStatus.textContent = 'Initializing...';
+          if (progressSummary) progressSummary.textContent = '0 / 0 tables';
+          return;
+        }
+
+        const tables = this.state.tables;
+        const totalCount = tables.length;
+        const completedCount = tables.filter(t => t.status === 'completed').length;
+        const failedCount = tables.filter(t => t.status === 'failed').length;
+        const inProgressCount = tables.filter(t => t.status === 'copying').length;
+        
+        let statusClass = 'status-initializing';
+        let statusText = 'Initializing...';
+        
+        // Check if all tables are completed (either successfully or failed)
+        const allTablesFinished = completedCount + failedCount === totalCount && totalCount > 0;
+        
+        if (allTablesFinished && !this.isCompleted) {
+          this.isCompleted = true;
+          this.stopElapsedTimer();
+        }
+        
+        if (failedCount > 0) {
+          statusClass = 'status-failed';
+          statusText = failedCount + ' table(s) failed';
+        } else if (completedCount === totalCount && totalCount > 0) {
+          statusClass = 'status-completed';
+          statusText = 'All tables completed';
+        } else if (inProgressCount > 0) {
+          statusClass = 'status-copying';
+          statusText = 'Copying ' + inProgressCount + ' table(s)';
+        } else if (totalCount > 0) {
+          statusClass = 'status-initializing';
+          statusText = 'Ready to start';
+        }
+        
+        if (statusBadge) statusBadge.className = 'status-badge ' + statusClass;
+        if (overallStatus) overallStatus.textContent = statusText;
+        if (progressSummary) progressSummary.textContent = completedCount + ' / ' + totalCount + ' tables';
+      }
+
+      updateConfiguration() {
+        const elements = {
+          parallelWorkers: document.getElementById('parallelWorkers'),
+          batchSize: document.getElementById('batchSize'),
+          sourceConn: document.getElementById('sourceConn'),
+          destConn: document.getElementById('destConn')
+        };
+        
+        if (elements.parallelWorkers) elements.parallelWorkers.textContent = (this.state.config && this.state.config.parallel) || '--';
+        if (elements.batchSize) elements.batchSize.textContent = (this.state.config && this.state.config.batchSize) || '--';
+        if (elements.sourceConn) elements.sourceConn.textContent = this.formatConnection(this.state.connections && this.state.connections.source);
+        if (elements.destConn) elements.destConn.textContent = this.formatConnection(this.state.connections && this.state.connections.destination);
+      }
+
+      updateStatistics() {
+        if (!this.state || !this.state.tables) return;
+        
+        const tables = this.state.tables;
+        const totalTables = tables.length;
+        const completedTables = tables.filter(t => t.status === 'completed').length;
+        const failedTables = tables.filter(t => t.status === 'failed').length;
+        
+        // Calculate total rows transferred
+        const totalRows = tables.reduce((sum, t) => sum + (t.syncedRows || 0), 0);
+        
+        // Calculate overall ETA
+        const overallETA = this.calculateOverallETA(tables);
+        
+        const elements = {
+          tablesProgress: document.getElementById('tablesProgress'),
+          failedTables: document.getElementById('failedTables'),
+          dataTransferred: document.getElementById('dataTransferred'),
+          overallETA: document.getElementById('overallETA')
+        };
+        
+        if (elements.tablesProgress) elements.tablesProgress.textContent = completedTables + ' / ' + totalTables;
+        if (elements.failedTables) elements.failedTables.textContent = failedTables;
+        if (elements.dataTransferred) elements.dataTransferred.textContent = this.formatNumber(totalRows) + ' rows';
+        if (elements.overallETA) elements.overallETA.textContent = overallETA;
+      }
+
+      calculateOverallETA(tables) {
+        const inProgressTables = tables.filter(t => t.status === 'copying');
+        const pendingTables = tables.filter(t => t.status === 'pending');
+        
+        if (inProgressTables.length === 0 && pendingTables.length === 0) {
+          return '--';
+        }
+        
+        // Calculate ETA based on current progress and speed
+        let totalRemainingSeconds = 0;
+        let hasValidETA = false;
+        
+        // Add ETA from tables currently being copied
+        inProgressTables.forEach(table => {
+          if (table.eta && table.eta > 0) {
+            totalRemainingSeconds += table.eta;
+            hasValidETA = true;
+          } else if (table.speed && table.speed > 0) {
+            const remainingRows = (table.totalRows || 0) - (table.syncedRows || 0);
+            if (remainingRows > 0) {
+              totalRemainingSeconds += remainingRows / table.speed;
+              hasValidETA = true;
+            }
+          }
+        });
+        
+        // Estimate time for pending tables based on average speed of completed tables
+        if (pendingTables.length > 0) {
+          const completedTables = tables.filter(t => t.status === 'completed' && t.duration);
+          if (completedTables.length > 0) {
+            const avgRowsPerSecond = completedTables.reduce((sum, t) => {
+              const durationSeconds = (t.duration || 0) / 1000;
+              return sum + (durationSeconds > 0 ? (t.totalRows || 0) / durationSeconds : 0);
+            }, 0) / completedTables.length;
+            
+            if (avgRowsPerSecond > 0) {
+              const pendingRows = pendingTables.reduce((sum, t) => sum + (t.totalRows || 0), 0);
+              totalRemainingSeconds += pendingRows / avgRowsPerSecond;
+              hasValidETA = true;
+            }
+          }
+        }
+        
+        return hasValidETA && totalRemainingSeconds > 0 ? 
+          this.formatDuration(totalRemainingSeconds * 1000) : '--';
+      }
+
+      updateTablesDisplay() {
+        if (!this.state || !this.state.tables) return;
+        
+        const filteredTables = this.filterTables(this.state.tables);
+        const tbody = document.querySelector('#tablesTable tbody');
+        if (!tbody) return;
+        
+        tbody.innerHTML = '';
+        
+        filteredTables.forEach(table => {
+          const row = this.createTableRow(table);
+          tbody.appendChild(row);
+        });
+      }
+
+      filterTables(tables) {
+        return tables.filter(table => {
+          const matchesFilter = !this.currentFilter || table.status === this.currentFilter;
+          const matchesSearch = !this.currentSearch || 
+            table.name.toLowerCase().includes(this.currentSearch.toLowerCase()) ||
+            table.fullName.toLowerCase().includes(this.currentSearch.toLowerCase());
+          return matchesFilter && matchesSearch;
+        });
+      }
+
+      createTableRow(table) {
+        const row = document.createElement('tr');
+        row.className = 'table-row status-' + table.status;
+        
+        const statusIcon = this.getStatusIcon(table.status);
+        const progress = this.calculateProgress(table);
+        const progressBar = this.createProgressBar(progress, table.status);
+        
+        row.innerHTML = 
+          '<td class="status-cell">' +
+            '<i class="' + statusIcon + '"></i>' +
+            '<span class="status-text">' + this.formatStatus(table.status) + '</span>' +
+          '</td>' +
+          '<td class="table-name">' + (table.fullName || table.name) + '</td>' +
+          '<td class="progress-cell">' + progressBar + '</td>' +
+          '<td class="records-cell">' + this.formatNumber(table.totalRows || 0) + '</td>' +
+          '<td class="speed-cell">' + this.formatSpeed(table.speed || 0) + '</td>' +
+          '<td class="eta-cell">' + this.formatETA(table.eta) + '</td>';
+        
+        return row;
+      }
+
+      getStatusIcon(status) {
+        const icons = {
+          pending: 'fas fa-clock status-icon-pending',
+          copying: 'fas fa-spinner fa-spin status-icon-copying',
+          completed: 'fas fa-check-circle status-icon-completed',
+          failed: 'fas fa-exclamation-circle status-icon-failed'
+        };
+        return icons[status] || 'fas fa-question-circle';
+      }
+
+      formatStatus(status) {
+        const statusLabels = {
+          pending: 'Pending',
+          copying: 'Copying',
+          completed: 'Completed',
+          failed: 'Failed'
+        };
+        return statusLabels[status] || status;
+      }
+
+      calculateProgress(table) {
+        if (!table.totalRows || table.totalRows === 0) return 0;
+        return Math.min(100, Math.round((table.syncedRows || 0) / table.totalRows * 100));
+      }
+
+      createProgressBar(percentage, status) {
+        const progressClass = status === 'copying' ? 'progress-bar-animated' : '';
+        return '<div class="progress-container">' +
+          '<div class="progress-bar ' + progressClass + '">' +
+            '<div style="width: ' + percentage + '%"></div>' +
+          '</div>' +
+          '<span class="progress-text">' + percentage + '%</span>' +
+          '</div>';
+      }
+
+      updateConnectionStatus(status, statusType) {
+        const statusBadge = document.getElementById('statusBadge');
+        const overallStatus = document.getElementById('overallStatus');
+        
+        if (statusBadge && overallStatus) {
+          statusBadge.className = 'status-badge status-' + statusType;
+          overallStatus.textContent = status;
+        }
+      }
+
+      formatConnection(conn) {
+        if (!conn) return '--';
+        if (typeof conn === 'string') return conn;
+        if (conn.display) return conn.display;
+        return (conn.host || '') + ':' + (conn.port || '') + '/' + (conn.database || '');
+      }
+
+      formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      }
+
+      formatNumber(num) {
+        return new Intl.NumberFormat().format(num);
+      }
+
+      formatSpeed(speed) {
+        if (!speed || speed === 0) return '--';
+        return this.formatNumber(Math.round(speed)) + ' rows/s';
+      }
+
+      formatETA(eta) {
+        if (!eta || eta === 0) return '--';
+        return this.formatDuration(eta * 1000);
+      }
+
+      formatDuration(milliseconds) {
+        const seconds = Math.floor(milliseconds / 1000);
+        const hours = Math.floor(seconds / 3600);
+        const minutes = Math.floor((seconds % 3600) / 60);
+        const secs = seconds % 60;
+        
+        return hours.toString().padStart(2, '0') + ':' + 
+               minutes.toString().padStart(2, '0') + ':' + 
+               secs.toString().padStart(2, '0');
+      }
+    }
+
+    // Initialize the monitor when the page loads
+    document.addEventListener('DOMContentLoaded', function() {
+      new PgcopyMonitor();
+    });
+  </script>
+</body>
+</html>
