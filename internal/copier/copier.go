@@ -209,19 +209,19 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 func (c *Copier) Close() {
 	if c.sourceDB != nil {
 		if err := c.sourceDB.Close(); err != nil {
-			c.logger.LogError("Failed to close source database connection: %v", err)
+			c.logger.Error("Failed to close source database connection: %v", err)
 		}
 	}
 	if c.destDB != nil {
 		if err := c.destDB.Close(); err != nil {
-			c.logger.LogError("Failed to close destination database connection: %v", err)
+			c.logger.Error("Failed to close destination database connection: %v", err)
 		}
 	}
 	// Note: WebServer doesn't currently have a Stop method
 	// The HTTP server will be closed when the process terminates
 	if c.logFile != nil {
 		if err := c.logFile.Close(); err != nil {
-			// Can't use c.logger.LogError here since we're closing the log file
+			// Can't use c.logger.Error here since we're closing the log file
 			fmt.Fprintf(os.Stderr, "Failed to close copy.log file: %v\n", err)
 		}
 	}
@@ -318,11 +318,11 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy len
 
 	// FK cleanup
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil { // still using manager for recovery
-		c.logger.LogWarn("Failed to recover FKs from backup file: %v", recoveryErr)
+		c.logger.Warn("Failed to recover FKs from backup file: %v", recoveryErr)
 	}
 	if c.fkStrategy != nil {
 		if cleanupErr := c.fkStrategy.Cleanup(); cleanupErr != nil {
-			c.logger.LogWarn("Failed to cleanup FK backup file: %v", cleanupErr)
+			c.logger.Warn("Failed to cleanup FK backup file: %v", cleanupErr)
 		}
 	}
 
@@ -375,7 +375,7 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			c.logger.LogError("Failed to close rows: %v", err)
+			c.logger.Error("Failed to close rows: %v", err)
 		}
 	}()
 
@@ -400,7 +400,7 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 			TotalRows: rowCount.Int64,
 		} // Get column information
 		if err := c.getTableColumns(tableInfo); err != nil {
-			c.logger.LogWarn("Failed to get columns for %s: %v", utils.HighlightTableName(schema, name), err)
+			c.logger.Warn("Failed to get columns for %s: %v", utils.HighlightTableName(schema, name), err)
 			continue
 		}
 
@@ -488,7 +488,7 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 	}
 	defer func() {
 		if err := rows.Close(); err != nil {
-			c.logger.LogError("Failed to close rows: %v", err)
+			c.logger.Error("Failed to close rows: %v", err)
 		}
 	}()
 
@@ -518,7 +518,7 @@ func (c *Copier) getTableColumns(table *TableInfo) error {
 	}
 	defer func() {
 		if err := pkRows.Close(); err != nil {
-			c.logger.LogError("Failed to close primary key rows: %v", err)
+			c.logger.Error("Failed to close primary key rows: %v", err)
 		}
 	}()
 

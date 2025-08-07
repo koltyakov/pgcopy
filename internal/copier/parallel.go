@@ -78,7 +78,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
 
 		if err := c.copyTable(table); err != nil {
-			c.logger.LogError("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
+			c.logger.Error("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
 
 			// Update state with table error
@@ -112,11 +112,11 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	startTime := time.Now()
 
 	if table.TotalRows == 0 {
-		c.logger.LogProgress("Skipping empty table %s", utils.HighlightTableName(table.Schema, table.Name))
+		c.logger.Info("Skipping empty table %s", utils.HighlightTableName(table.Schema, table.Name))
 		return nil
 	}
 
-	c.logger.LogProgress("Copying table %s (%s rows)", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)))
+	c.logger.Info("Copying table %s (%s rows)", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)))
 
 	// Drop foreign keys for this table if not using replica mode
 	if c.fkStrategy != nil {
@@ -140,7 +140,7 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	// Restore foreign keys for this table immediately after copying
 	if c.fkStrategy != nil {
 		if restoreErr := c.fkStrategy.Restore(table); restoreErr != nil {
-			c.logger.LogWarn("Failed to restore foreign keys for %s: %v", utils.HighlightTableName(table.Schema, table.Name), restoreErr)
+			c.logger.Warn("Failed to restore foreign keys for %s: %v", utils.HighlightTableName(table.Schema, table.Name), restoreErr)
 		}
 	}
 
@@ -150,7 +150,7 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	tableFullName := fmt.Sprintf("%s.%s", table.Schema, table.Name)
 	c.logTableCopy(tableFullName, table.TotalRows, duration)
 
-	c.logger.LogSuccess("Completed copying %s (%s rows) in %s", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)), utils.Colorize(utils.ColorDim, utils.FormatDuration(duration)))
+	c.logger.Info("Completed copying %s (%s rows) in %s", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)), utils.Colorize(utils.ColorDim, utils.FormatDuration(duration)))
 	return nil
 }
 
@@ -167,7 +167,7 @@ func (c *Copier) clearDestinationTable(table *TableInfo) error {
 		defer func() {
 			if !committed {
 				if err := tx.Rollback(); err != nil {
-					c.logger.LogError("Failed to rollback truncate transaction: %v", err)
+					c.logger.Error("Failed to rollback truncate transaction: %v", err)
 				}
 			}
 		}()
@@ -219,7 +219,7 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 	}
 	defer func() {
 		if err := insertStmt.Close(); err != nil {
-			c.logger.LogError("Failed to close insert statement: %v", err)
+			c.logger.Error("Failed to close insert statement: %v", err)
 		}
 	}()
 
@@ -252,7 +252,7 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 
 		batchRowsCopied, err := c.processBatch(rows, insertStmt, table)
 		if err := rows.Close(); err != nil {
-			c.logger.LogError("Failed to close batch rows: %v", err)
+			c.logger.Error("Failed to close batch rows: %v", err)
 		}
 
 		if err != nil {
@@ -289,7 +289,7 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 	defer func() {
 		if !committed {
 			if err := tx.Rollback(); err != nil {
-				c.logger.LogError("Failed to rollback batch transaction: %v", err)
+				c.logger.Error("Failed to rollback batch transaction: %v", err)
 			}
 		}
 	}()
@@ -304,7 +304,7 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 	txStmt := tx.Stmt(insertStmt)
 	defer func() {
 		if err := txStmt.Close(); err != nil {
-			c.logger.LogError("Failed to close transaction statement: %v", err)
+			c.logger.Error("Failed to close transaction statement: %v", err)
 		}
 	}()
 

@@ -52,8 +52,6 @@ func FormatLogLevel(level string) string {
 		return Colorize(ColorYellow, "WARN")
 	case "ERROR":
 		return Colorize(ColorRed, "ERROR")
-	case "SUCCESS":
-		return Colorize(ColorGreen, "DONE")
 	default:
 		return Colorize(ColorWhite, "📝 "+level)
 	}
