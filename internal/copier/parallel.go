@@ -1,6 +1,7 @@
 package copier
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -12,7 +13,7 @@ import (
 )
 
 // copyTablesParallel copies tables using parallel workers
-func (c *Copier) copyTablesParallel(tables []*TableInfo) error {
+func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) error {
 	// Create a channel for work distribution
 	tableChan := make(chan *TableInfo, len(tables))
 	errChan := make(chan error, c.config.Parallel)
@@ -21,7 +22,7 @@ func (c *Copier) copyTablesParallel(tables []*TableInfo) error {
 	// Start worker goroutines
 	for i := 0; i < c.config.Parallel; i++ {
 		wg.Add(1)
-		go c.worker(tableChan, errChan, &wg)
+		go c.worker(ctx, tableChan, errChan, &wg)
 	}
 
 	// Send tables to workers
@@ -54,10 +55,17 @@ func (c *Copier) copyTablesParallel(tables []*TableInfo) error {
 }
 
 // worker processes tables from the channel
-func (c *Copier) worker(tableChan <-chan *TableInfo, errChan chan<- error, wg *sync.WaitGroup) {
+func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errChan chan<- error, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for table := range tableChan {
+		// Check for cancellation
+		select {
+		case <-ctx.Done():
+			errChan <- ctx.Err()
+			return
+		default:
+		}
 		// Mark table as in progress and update state
 		if c.interactiveMode {
 			c.startTableInInteractive(table)
@@ -111,8 +119,10 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	c.logger.LogProgress("Copying table %s (%s rows)", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)))
 
 	// Drop foreign keys for this table if not using replica mode
-	if err := c.fkManager.DropForeignKeysForTable(table); err != nil {
-		return fmt.Errorf("failed to drop foreign keys for table: %w", err)
+	if c.fkStrategy != nil {
+		if err := c.fkStrategy.Prepare(table); err != nil {
+			return fmt.Errorf("failed to drop foreign keys for table: %w", err)
+		}
 	}
 
 	// Clear destination table first
@@ -128,8 +138,10 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	}
 
 	// Restore foreign keys for this table immediately after copying
-	if restoreErr := c.fkManager.RestoreForeignKeysForTable(table); restoreErr != nil {
-		c.logger.LogWarn("Failed to restore foreign keys for %s: %v", utils.HighlightTableName(table.Schema, table.Name), restoreErr)
+	if c.fkStrategy != nil {
+		if restoreErr := c.fkStrategy.Restore(table); restoreErr != nil {
+			c.logger.LogWarn("Failed to restore foreign keys for %s: %v", utils.HighlightTableName(table.Schema, table.Name), restoreErr)
+		}
 	}
 
 	duration := time.Since(startTime)

@@ -2,6 +2,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -119,6 +120,9 @@ Examples:
 		fmt.Printf("Starting data copy operation...\n")
 
 		// Use state-driven copier for web mode
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
 		if displayMode == copier.DisplayModeWeb {
 			// Find an available port starting from the requested port
 			actualPort := findAvailablePort(port)
@@ -146,9 +150,7 @@ Examples:
 
 			// Start copy operation in a goroutine
 			copyDone := make(chan error, 1)
-			go func() {
-				copyDone <- stateCopier.Copy()
-			}()
+			go func() { copyDone <- stateCopier.Copy(ctx) }()
 
 			// Wait for either completion or interrupt
 			select {
@@ -172,7 +174,7 @@ Examples:
 			}
 			defer dataCopier.Close()
 
-			if err := dataCopier.Copy(); err != nil {
+			if err := dataCopier.Copy(ctx); err != nil {
 				duration := time.Since(start)
 				log.Fatalf("Copy operation failed after %s: %v", utils.FormatDuration(duration), err)
 			}

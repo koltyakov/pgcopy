@@ -37,6 +37,22 @@ type ForeignKeyManager struct {
 	processedConstraints map[string]bool // Track processed constraints to avoid duplicates
 }
 
+// Detect discovers foreign key constraints for provided tables (ForeignKeyStrategy implementation).
+func (fkm *ForeignKeyManager) Detect(tables []*TableInfo) error { return fkm.DetectForeignKeys(tables) }
+
+// Prepare performs pre-copy FK handling for a table (drop or noop in replica mode).
+func (fkm *ForeignKeyManager) Prepare(table *TableInfo) error {
+	return fkm.DropForeignKeysForTable(table)
+}
+
+// Restore re-creates foreign keys associated with the table.
+func (fkm *ForeignKeyManager) Restore(table *TableInfo) error {
+	return fkm.RestoreForeignKeysForTable(table)
+}
+
+// Cleanup removes residual FK backup artifacts after successful run.
+func (fkm *ForeignKeyManager) Cleanup() error { return fkm.CleanupBackupFile() }
+
 // NewForeignKeyManager creates a new foreign key manager
 func NewForeignKeyManager(db *sql.DB, logger *utils.SimpleLogger) *ForeignKeyManager {
 	return &ForeignKeyManager{

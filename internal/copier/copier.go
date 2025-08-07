@@ -4,6 +4,7 @@ package copier
 
 import (
 	"bufio"
+	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -66,6 +67,7 @@ type Copier struct {
 	sourceDB           *sql.DB
 	destDB             *sql.DB
 	fkManager          *ForeignKeyManager
+	fkStrategy         ForeignKeyStrategy
 	state              *state.CopyState // Centralized state management
 	lastUpdate         time.Time
 	progressBar        *progressbar.ProgressBar
@@ -186,6 +188,7 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 
 	// Initialize foreign key manager
 	c.fkManager = NewForeignKeyManager(c.destDB, c.logger)
+	c.fkStrategy = c.fkManager
 
 	// Initialize persistence (file logger)
 	if err := c.initFileLogger(); err != nil {
@@ -225,7 +228,7 @@ func (c *Copier) Close() {
 }
 
 // Copy performs the data copying operation
-func (c *Copier) Copy() error { //nolint:funlen // legacy length; will shrink as layers mature
+func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy length; will shrink as layers mature
 	// Status: preparing
 	c.state.SetStatus(state.StatusPreparing)
 	c.state.AddLog(state.LogLevelInfo, "Starting copy operation", "copier", "", nil)
@@ -284,8 +287,10 @@ func (c *Copier) Copy() error { //nolint:funlen // legacy length; will shrink as
 	c.initializeDisplayMode(planned, totalRows)
 
 	// Foreign keys (part of discovery layer scope logically)
-	if err := c.discovery.DetectForeignKeys(planned); err != nil {
-		return fmt.Errorf("failed to detect foreign keys: %w", err)
+	if c.fkStrategy != nil {
+		if err := c.fkStrategy.Detect(planned); err != nil {
+			return fmt.Errorf("failed to detect foreign keys: %w", err)
+		}
 	}
 	if err := c.fkManager.TryUseReplicaMode(); err != nil { // sets mode / logs
 		c.state.SetStatus(state.StatusFailed)
@@ -296,7 +301,7 @@ func (c *Copier) Copy() error { //nolint:funlen // legacy length; will shrink as
 	// Execution
 	c.state.SetStatus(state.StatusCopying)
 	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting parallel copy with %d workers", c.config.Parallel), "copier", "", nil)
-	err = c.executor.Execute(planned)
+	err = c.executor.Execute(ctx, planned)
 	if err != nil {
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("copy_error", fmt.Sprintf("Copy operation failed: %v", err), "copier", true, nil)
@@ -312,11 +317,13 @@ func (c *Copier) Copy() error { //nolint:funlen // legacy length; will shrink as
 	}
 
 	// FK cleanup
-	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
+	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil { // still using manager for recovery
 		c.logger.LogWarn("Failed to recover FKs from backup file: %v", recoveryErr)
 	}
-	if cleanupErr := c.fkManager.CleanupBackupFile(); cleanupErr != nil {
-		c.logger.LogWarn("Failed to cleanup FK backup file: %v", cleanupErr)
+	if c.fkStrategy != nil {
+		if cleanupErr := c.fkStrategy.Cleanup(); cleanupErr != nil {
+			c.logger.LogWarn("Failed to cleanup FK backup file: %v", cleanupErr)
+		}
 	}
 
 	// Completion
