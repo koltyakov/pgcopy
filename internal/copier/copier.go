@@ -75,6 +75,13 @@ type Copier struct {
 	interactiveMode    bool                // Whether to use interactive display
 	interactiveDisplay *InteractiveDisplay // Interactive progress display
 	webServer          *server.WebServer   // Web server for web mode
+
+	// Layer components (experimental refactor)
+	discovery Discovery
+	planner   Planner
+	executor  Executor
+	reporter  Reporter
+	persist   Persistence
 }
 
 // TableInfo is a type alias for state.TableState for backward compatibility
@@ -180,10 +187,17 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	// Initialize foreign key manager
 	c.fkManager = NewForeignKeyManager(c.destDB, c.logger)
 
-	// Initialize file logger for copy.log
+	// Initialize persistence (file logger)
 	if err := c.initFileLogger(); err != nil {
 		return nil, fmt.Errorf("failed to initialize file logger: %w", err)
 	}
+
+	// Initialize layered components (can be swapped later)
+	c.discovery = &defaultDiscovery{c: c}
+	c.planner = &defaultPlanner{c: c}
+	c.executor = &defaultExecutor{c: c}
+	c.reporter = &defaultReporter{c: c}
+	c.persist = &defaultPersistence{c: c}
 
 	return c, nil
 }
@@ -211,19 +225,18 @@ func (c *Copier) Close() {
 }
 
 // Copy performs the data copying operation
-func (c *Copier) Copy() error {
-	// Set operation status to preparing
+func (c *Copier) Copy() error { //nolint:funlen // legacy length; will shrink as layers mature
+	// Status: preparing
 	c.state.SetStatus(state.StatusPreparing)
 	c.state.AddLog(state.LogLevelInfo, "Starting copy operation", "copier", "", nil)
 
-	// Get list of tables to copy
-	tables, err := c.getTablesToCopy()
+	// 1. Discovery
+	tables, err := c.discovery.DiscoverTables()
 	if err != nil {
 		c.state.SetStatus(state.StatusFailed)
-		c.state.AddError("preparation_error", fmt.Sprintf("Failed to get tables list: %v", err), "copier", true, nil)
-		return fmt.Errorf("failed to get tables list: %w", err)
+		c.state.AddError("preparation_error", fmt.Sprintf("Failed to discover tables: %v", err), "copier", true, nil)
+		return fmt.Errorf("failed to discover tables: %w", err)
 	}
-
 	if len(tables) == 0 {
 		c.state.SetStatus(state.StatusCompleted)
 		c.state.AddLog(state.LogLevelInfo, "No tables to copy", "copier", "", nil)
@@ -231,65 +244,62 @@ func (c *Copier) Copy() error {
 		return nil
 	}
 
-	// Update state with table information - this will calculate totals automatically
-	for _, table := range tables {
-		c.state.AddTable(table.Schema, table.Name, table.TotalRows)
+	// 2. Planning (ordering / dependency resolution placeholder)
+	planned, err := c.planner.PlanTables(tables)
+	if err != nil {
+		c.state.SetStatus(state.StatusFailed)
+		c.state.AddError("planning_error", fmt.Sprintf("Failed to plan tables: %v", err), "copier", true, nil)
+		return fmt.Errorf("failed to plan tables: %w", err)
 	}
 
-	// Get calculated totals for logging (after AddTable calls have accumulated the totals)
-	totalTables := c.state.Summary.TotalTables
+	// Update state with planned tables (same as discovered for now)
+	for _, table := range planned {
+		c.state.AddTable(table.Schema, table.Name, table.TotalRows)
+	}
+	// Totals now computed in state
 	totalRows := c.state.Summary.TotalRows
+	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Planned %d tables with %d total rows", c.state.Summary.TotalTables, totalRows), "copier", "", nil)
 
-	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Found %d tables with %d total rows", totalTables, totalRows), "copier", "", nil)
-
-	// Show confirmation dialog unless skip-backup is enabled or dry-run mode
+	// Optional confirmation
 	if !c.config.SkipBackup && !c.config.DryRun {
-		if !c.confirmDataOverwrite(tables, totalRows) {
+		if !c.confirmDataOverwrite(planned, totalRows) { // reuse existing prompt
 			fmt.Println("Operation cancelled by user.")
 			return nil
 		}
 	}
 
-	// Log the start of copy operation
+	// Persistence: start log
 	if c.fileLogger != nil {
 		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		c.fileLogger.Printf("%s | COPY_START | %d tables | %d total rows", timestamp, len(tables), totalRows)
+		c.fileLogger.Printf("%s | COPY_START | %d tables | %d total rows", timestamp, len(planned), totalRows)
 	}
 
+	// Dry run path
 	if c.config.DryRun {
-		return c.dryRun(tables)
+		return c.dryRun(planned)
 	}
 
-	// Initialize progress tracking
+	// Reporter init (display modes)
 	c.lastUpdate = time.Now()
+	c.initializeDisplayMode(planned, totalRows)
 
-	// Initialize display mode based on configuration
-	c.initializeDisplayMode(tables, totalRows)
-
-	// Detect and handle foreign keys
-	if err := c.fkManager.DetectForeignKeys(tables); err != nil {
+	// Foreign keys (part of discovery layer scope logically)
+	if err := c.discovery.DetectForeignKeys(planned); err != nil {
 		return fmt.Errorf("failed to detect foreign keys: %w", err)
 	}
-
-	// Try to use replica mode first, fall back to dropping FKs if needed
-	if err := c.fkManager.TryUseReplicaMode(); err != nil {
+	if err := c.fkManager.TryUseReplicaMode(); err != nil { // sets mode / logs
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("foreign_key_error", fmt.Sprintf("Failed to setup foreign key handling: %v", err), "copier", true, nil)
 		return fmt.Errorf("failed to setup foreign key handling: %w", err)
 	}
 
-	// Set operation status to copying and trigger event
+	// Execution
 	c.state.SetStatus(state.StatusCopying)
 	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting parallel copy with %d workers", c.config.Parallel), "copier", "", nil)
-
-	// Copy tables in parallel
-	err = c.copyTablesParallel(tables)
-
+	err = c.executor.Execute(planned)
 	if err != nil {
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("copy_error", fmt.Sprintf("Copy operation failed: %v", err), "copier", true, nil)
-
-		// Wait for web client acknowledgment if using web output
 		if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
 			fmt.Println("Waiting for web client to acknowledge failure...")
 			if c.webServer.WaitForCompletionAck(30 * time.Second) {
@@ -298,25 +308,20 @@ func (c *Copier) Copy() error {
 				fmt.Println("Proceeding without web client acknowledgment")
 			}
 		}
-
 		return err
 	}
 
-	// Try to recover any remaining FKs from backup file before cleanup
+	// FK cleanup
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
 		c.logger.LogWarn("Failed to recover FKs from backup file: %v", recoveryErr)
 	}
-
-	// Clean up backup file on successful completion
 	if cleanupErr := c.fkManager.CleanupBackupFile(); cleanupErr != nil {
 		c.logger.LogWarn("Failed to cleanup FK backup file: %v", cleanupErr)
 	}
 
-	// Set operation status to completed
+	// Completion
 	c.state.SetStatus(state.StatusCompleted)
 	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Copy operation completed successfully - %d tables, %d rows", c.state.Summary.CompletedTables, c.state.Summary.SyncedRows), "copier", "", nil)
-
-	// Wait for web client acknowledgment if using web output
 	if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
 		fmt.Println("Waiting for web client to acknowledge completion...")
 		if c.webServer.WaitForCompletionAck(30 * time.Second) {
@@ -331,22 +336,17 @@ func (c *Copier) Copy() error {
 		c.interactiveDisplay.Stop()
 	} else if c.getDisplayMode() == DisplayModeProgress && c.progressBar != nil {
 		_ = c.progressBar.Finish()
-		fmt.Println() // Add a newline after progress bar
-		// Restore the original logger output
+		fmt.Println()
 		log.SetOutput(os.Stderr)
 	}
 
-	// Print final statistics
+	// Reporting: final stats
 	c.printStats()
-
-	// Log the completion of copy operation
 	if c.fileLogger != nil {
 		timestamp := time.Now().Format("2006-01-02 15:04:05")
 		totalDuration := time.Since(c.state.StartTime)
-		c.fileLogger.Printf("%s | COPY_COMPLETE | %d tables | %d rows | %s",
-			timestamp, c.state.Summary.CompletedTables, c.state.Summary.SyncedRows, utils.FormatLogDuration(totalDuration))
+		c.fileLogger.Printf("%s | COPY_COMPLETE | %d tables | %d rows | %s", timestamp, c.state.Summary.CompletedTables, c.state.Summary.SyncedRows, utils.FormatLogDuration(totalDuration))
 	}
-
 	return nil
 }
 
