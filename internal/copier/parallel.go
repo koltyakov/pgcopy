@@ -55,25 +55,28 @@ func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) er
 }
 
 // worker processes tables from the channel
-func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errChan chan<- error, wg *sync.WaitGroup) {
+func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errChan chan<- error, wg *sync.WaitGroup) { //nolint:funlen
 	defer wg.Done()
 
-	for table := range tableChan {
-		// Check for cancellation
+	// Helper for processing a single table (no batching logic here)
+	processOne := func(table *TableInfo) {
+		if table == nil {
+			return
+		}
+		// Check for cancellation before starting
 		select {
 		case <-ctx.Done():
 			errChan <- ctx.Err()
 			return
 		default:
 		}
-		// Mark table as in progress and update state
+
 		if c.interactiveMode {
 			c.startTableInInteractive(table)
 		} else {
 			c.setTableInProgress(table.Schema, table.Name)
 		}
 
-		// Update state to track table start
 		c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCopying)
 		c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
 
@@ -81,29 +84,69 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 			c.logger.Error("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
 
-			// Update state with table error
 			c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusFailed)
 			c.state.AddTableError(table.Schema, table.Name, err.Error(), nil)
-
-			// Mark as failed in interactive mode
 			if c.interactiveMode && c.interactiveDisplay != nil {
 				c.interactiveDisplay.CompleteTable(table.Schema, table.Name, false)
 			}
 		} else {
-			// Update state with table completion
 			c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCompleted)
 			c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Completed copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
-
-			// Update progress bar description when a table is completed
 			if c.getDisplayMode() == DisplayModeProgress && c.progressBar != nil {
-				description := fmt.Sprintf("Copying rows (%d/%d tables)",
-					c.state.Summary.CompletedTables, c.state.Summary.TotalTables)
+				description := fmt.Sprintf("Copying rows (%d/%d tables)", c.state.Summary.CompletedTables, c.state.Summary.TotalTables)
 				c.progressBar.Describe(description)
 			}
 		}
-
-		// Remove table from progress tracking when done (success or failure)
 		c.removeTableFromProgress(table.Schema, table.Name)
+	}
+
+	smallThreshold := int64(c.config.BatchSize) // heuristic: table smaller than one batch considered "small"
+
+	for {
+		var table *TableInfo
+		var ok bool
+		select {
+		case <-ctx.Done():
+			errChan <- ctx.Err()
+			return
+		case table, ok = <-tableChan:
+			if !ok { // channel closed
+				return
+			}
+		}
+
+		// Process the first (possibly large) table
+		processOne(table)
+
+		// If it's not small, loop to fetch next table normally
+		if table == nil || table.TotalRows >= smallThreshold {
+			continue
+		}
+
+		// Table was small: opportunistically drain additional small tables (and maybe one large) without letting the worker go idle
+		// This reduces worker churn for many tiny tables
+	drainLoop:
+		for {
+			select {
+			case <-ctx.Done():
+				errChan <- ctx.Err()
+				return
+			case next, ok2 := <-tableChan:
+				if !ok2 { // channel exhausted
+					return
+				}
+				processOne(next)
+				// Stop batching if we hit a large table; large table processed already, proceed to next outer iteration
+				if next.TotalRows >= smallThreshold {
+					break drainLoop
+				}
+				// Otherwise continue draining more small tables (non-blocking try again)
+				continue
+			default:
+				// No immediately available tables; yield back to outer loop to allow fair scheduling
+				break drainLoop
+			}
+		}
 	}
 }
 
