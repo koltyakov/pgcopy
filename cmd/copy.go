@@ -81,8 +81,6 @@ Examples:
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		skipBackup, _ := cmd.Flags().GetBool("skip-backup")
 		output, _ := cmd.Flags().GetString("output")
-		port, _ := cmd.Flags().GetInt("port")
-
 		// Parse display mode
 		var displayMode copier.DisplayMode
 		switch output {
@@ -124,19 +122,18 @@ Examples:
 		defer cancel()
 
 		if displayMode == copier.DisplayModeWeb {
-			// Find an available port starting from the requested port
-			actualPort := findAvailablePort(port)
-			if actualPort != port {
-				fmt.Printf("Port %d is in use, using port %d instead\n", port, actualPort)
+			// Prefer default 8080, otherwise fall back to a random available port
+			preferred := 8080
+			actualPort := findAvailablePort(preferred)
+			if actualPort != preferred {
+				fmt.Printf("Port %d unavailable, selected free port %d\n", preferred, actualPort)
 			}
 
-			// Auto-open web browser
 			if err := openBrowser(fmt.Sprintf("http://localhost:%d", actualPort)); err != nil {
 				fmt.Printf("Could not open browser automatically: %v\n", err)
-				fmt.Printf("Please open http://localhost:%d in your browser\n", actualPort)
+				fmt.Printf("Open http://localhost:%d manually\n", actualPort)
 			}
 
-			// Create copier with web interface
 			stateCopier, err := copier.NewWithWebPort(config, actualPort)
 			if err != nil {
 				duration := time.Since(start)
@@ -193,5 +190,5 @@ func init() {
 	copyCmd.Flags().StringSlice("include", []string{}, "Tables to include in copying (supports wildcards: user_*,*_data)")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("skip-backup", false, "Skip confirmation dialog for data overwrite")
-	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface)")
+	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface; auto on :8080 or random)")
 }
