@@ -139,7 +139,7 @@ pgcopy copy \
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
   --dest "postgres://user:pass@dest:5432/db" \
-  --include-tables "users,orders,products"
+  --include "users,orders,products"
 ```
 
 ### Table Listing

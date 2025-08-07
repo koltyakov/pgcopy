@@ -9,5 +9,5 @@ pgcopy copy \
   --dest "$DEST_DB" \
   --parallel 8 \
   --batch-size 5000 \
-  --exclude-tables "logs,sessions,cache_entries,temp_files" \
-  --include-tables "public.Container*"
+  --exclude "logs,sessions,cache_entries,temp_files" \
+  --include "public.Container*"

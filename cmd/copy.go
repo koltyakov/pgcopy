@@ -68,15 +68,15 @@ Examples:
   pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output progress    # Progress bar mode
   pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output interactive # Interactive mode with live table progress
   pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output web         # Web interface mode with real-time monitoring
-  pgcopy copy -s "..." -d "..." --exclude-tables "temp_*,*_logs,*_cache"        # Exclude with wildcards
-  pgcopy copy -s "..." -d "..." --include-tables "user_*,order_*"               # Include with wildcards`,
+  pgcopy copy -s "..." -d "..." --exclude "temp_*,*_logs,*_cache"        # Exclude with wildcards
+  pgcopy copy -s "..." -d "..." --include "user_*,order_*"               # Include with wildcards`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
 		destConn, _ := cmd.Flags().GetString("dest")
 		parallel, _ := cmd.Flags().GetInt("parallel")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
-		excludeTables, _ := cmd.Flags().GetStringSlice("exclude-tables")
-		includeTables, _ := cmd.Flags().GetStringSlice("include-tables")
+		excludeTables, _ := cmd.Flags().GetStringSlice("exclude")
+		includeTables, _ := cmd.Flags().GetStringSlice("include")
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		skipBackup, _ := cmd.Flags().GetBool("skip-backup")
 		output, _ := cmd.Flags().GetString("output")
@@ -187,10 +187,9 @@ func init() {
 	copyCmd.Flags().StringP("dest", "d", "", "Destination database connection string (postgres://user:pass@host:port/dbname)")
 	copyCmd.Flags().IntP("parallel", "p", 4, "Number of parallel workers")
 	copyCmd.Flags().Int("batch-size", 1000, "Batch size for data copying")
-	copyCmd.Flags().StringSlice("exclude-tables", []string{}, "Tables to exclude from copying (supports wildcards: temp_*,*_logs)")
-	copyCmd.Flags().StringSlice("include-tables", []string{}, "Tables to include in copying (supports wildcards: user_*,*_data)")
+	copyCmd.Flags().StringSlice("exclude", []string{}, "Tables to exclude from copying (supports wildcards: temp_*,*_logs)")
+	copyCmd.Flags().StringSlice("include", []string{}, "Tables to include in copying (supports wildcards: user_*,*_data)")
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("skip-backup", false, "Skip confirmation dialog for data overwrite")
 	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface)")
-	copyCmd.Flags().Int("port", 8080, "Port for web interface (only used with --output web, automatically finds available port if busy)")
 }

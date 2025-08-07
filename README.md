@@ -85,7 +85,7 @@ pgcopy copy --source "..." --dest "..." --skip-backup
    ```bash
    # Sync only specific tables
    pgcopy copy --source "postgres://user:pass@prod:5432/db" --dest "postgres://user:pass@dev:5432/db" \
-     --include-tables "public.users,public.orders,public.products"
+     --include "public.users,public.orders,public.products"
    ```
 
 4. **Cross-Cloud Data Transfer**
@@ -168,32 +168,32 @@ pgcopy copy \
   --dest "postgres://user:pass@localhost:5433/destdb" \
   --parallel 8 \
   --batch-size 5000 \
-  --exclude-tables "logs,temp_*,*_cache" \
-  --include-tables "users,orders,products"
+  --exclude "logs,temp_*,*_cache" \
+  --include "users,orders,products"
 ```
 
 ### Table Filtering with Wildcards
 
-Both `--exclude-tables` and `--include-tables` support wildcard patterns for flexible table selection:
+Both `--exclude` and `--include` support wildcard patterns for flexible table selection:
 
 ```bash
 # Exclude all temporary tables and logs
 pgcopy copy \
   --source "postgres://user:pass@localhost:5432/sourcedb" \
   --dest "postgres://user:pass@localhost:5433/destdb" \
-  --exclude-tables "temp_*,*_logs,*_cache,session_*"
+  --exclude "temp_*,*_logs,*_cache,session_*"
 
 # Include only specific patterns
 pgcopy copy \
   --source "postgres://user:pass@localhost:5432/sourcedb" \
   --dest "postgres://user:pass@localhost:5433/destdb" \
-  --include-tables "user_*,order_*,product_*"
+  --include "user_*,order_*,product_*"
 
 # Mix exact names and patterns
 pgcopy copy \
   --source "postgres://user:pass@localhost:5432/sourcedb" \
   --dest "postgres://user:pass@localhost:5433/destdb" \
-  --include-tables "users,profiles,*_settings,config_*"
+  --include "users,profiles,*_settings,config_*"
 ```
 
 **Supported wildcard patterns:**
@@ -312,8 +312,8 @@ Copy data from source to destination database.
 - `--dest, -d`: Destination database connection string
 - `--parallel, -p`: Number of parallel workers (default: 4)
 - `--batch-size`: Batch size for data copying (default: 1000)
-- `--exclude-tables`: Tables to exclude from copying (comma-separated, supports wildcards: `temp_*,*_logs`)
-- `--include-tables`: Tables to include in copying (comma-separated, supports wildcards: `user_*,*_data`)
+- `--exclude`: Tables to exclude from copying (comma-separated, supports wildcards: `temp_*,*_logs`)
+- `--include`: Tables to include in copying (comma-separated, supports wildcards: `user_*,*_data`)
 - `--dry-run`: Show what would be copied without actually copying
 - `--skip-backup`: Skip confirmation dialog for data overwrite (use with caution)
 - `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress)
@@ -565,7 +565,7 @@ pgcopy copy \
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
   --dest "postgres://user:pass@dest:5432/db" \
-  --include-tables "users,orders,products,inventory"
+  --include "users,orders,products,inventory"
 ```
 
 ### Exclude System Tables
@@ -574,7 +574,7 @@ pgcopy copy \
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
   --dest "postgres://user:pass@dest:5432/db" \
-  --exclude-tables "logs,sessions,temp_cache"
+  --exclude "logs,sessions,temp_cache"
 ```
 
 ### Wildcard-based Filtering
@@ -584,13 +584,13 @@ pgcopy copy \
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
   --dest "postgres://user:pass@dest:5432/db" \
-  --exclude-tables "temp_*,*_logs,*_cache"
+  --exclude "temp_*,*_logs,*_cache"
 
 # Include only user-related tables
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
   --dest "postgres://user:pass@dest:5432/db" \
-  --include-tables "user_*,*_users,customer_*"
+  --include "user_*,*_users,customer_*"
 ```
 
 ## Building from Source
