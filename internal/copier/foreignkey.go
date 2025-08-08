@@ -577,7 +577,7 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 	fkm.droppedKeys = append(fkm.droppedKeys, *fk)
 
 	// Clean up duplicates in droppedKeys
-	fkm.deduplicateDroppedKeysUnsafe()
+	fkm.deduplicateDroppedKeysLocked()
 
 	// Update backup file snapshot (will acquire its own lock)
 	fkm.mu.Unlock()
@@ -594,11 +594,11 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 func (fkm *ForeignKeyManager) deduplicateDroppedKeys() {
 	fkm.mu.Lock()
 	defer fkm.mu.Unlock()
-	fkm.deduplicateDroppedKeysUnsafe()
+	fkm.deduplicateDroppedKeysLocked()
 }
 
-// deduplicateDroppedKeysUnsafe removes duplicate entries from droppedKeys slice (must hold mu.Lock)
-func (fkm *ForeignKeyManager) deduplicateDroppedKeysUnsafe() {
+// deduplicateDroppedKeysLocked removes duplicate entries from droppedKeys slice (must hold mu.Lock)
+func (fkm *ForeignKeyManager) deduplicateDroppedKeysLocked() {
 	uniqueFKs := make(map[string]ForeignKey)
 	for _, fk := range fkm.droppedKeys {
 		constraintKey := fmt.Sprintf("%s.%s.%s", fk.Schema, fk.Table, fk.ConstraintName)
