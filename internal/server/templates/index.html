@@ -879,7 +879,17 @@
       }
 
       calculateProgress(table) {
-        if (!table.totalRows || table.totalRows === 0) return 0;
+        // Prefer server-reported progress when available
+        if (typeof table.progress === 'number') {
+          // If the table is marked completed by the server, always show 100%
+          if (table.status === 'completed') return 100;
+          const p = Math.round(table.progress);
+          return Math.min(100, Math.max(0, p));
+        }
+        // Fall back to calculating from rows; completed zero-row tables should still show 100%
+        if (!table.totalRows || table.totalRows === 0) {
+          return table.status === 'completed' ? 100 : 0;
+        }
         return Math.min(100, Math.round((table.syncedRows || 0) / table.totalRows * 100));
       }
 

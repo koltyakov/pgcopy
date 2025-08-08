@@ -25,6 +25,11 @@ type WebServer struct {
 	writeMu           sync.Mutex // Mutex to protect WebSocket writes
 	upgrader          websocket.Upgrader
 	completionAckChan chan bool // Channel to signal completion acknowledgment
+
+	// debounce controls to coalesce frequent updates (progress/metrics) into ~10Hz pushes
+	debounceDelay time.Duration
+	debounceMu    sync.Mutex
+	debounceTimer *time.Timer
 }
 
 // NewWebServer creates a new web server instance
@@ -39,6 +44,7 @@ func NewWebServer(copyState *state.CopyState, port int) *WebServer {
 			},
 		},
 		completionAckChan: make(chan bool, 1), // Buffered channel for completion acknowledgment
+		debounceDelay:     100 * time.Millisecond,
 	}
 }
 
@@ -73,7 +79,13 @@ func (ws *WebServer) Start() error {
 
 // OnStateChange implements the Listener interface
 func (ws *WebServer) OnStateChange(_ *state.CopyState, event state.Event) {
-	// Broadcast state changes to all connected clients
+	// Debounce high-frequency events to reduce WebSocket noise
+	switch event.Type {
+	case state.EventTableProgress, state.EventMetricsUpdated, state.EventLogAdded:
+		ws.scheduleDebouncedSnapshot()
+		return
+	}
+	// Broadcast immediately for other events
 	ws.broadcastStateUpdate(event)
 }
 
@@ -217,6 +229,61 @@ func (ws *WebServer) broadcastStateUpdate(event state.Event) {
 		}
 		ws.clientsMu.Unlock()
 	}
+}
+
+// broadcastSnapshot sends the full state snapshot to all connected clients (debounced path)
+func (ws *WebServer) broadcastSnapshot() {
+	// Serialize all WebSocket writes to prevent concurrent write errors
+	ws.writeMu.Lock()
+	defer ws.writeMu.Unlock()
+
+	ws.clientsMu.RLock()
+	if len(ws.clients) == 0 {
+		ws.clientsMu.RUnlock()
+		return
+	}
+
+	snapshot := ws.state.GetSnapshot()
+	message := map[string]interface{}{
+		"type":  "state_snapshot",
+		"state": snapshot,
+	}
+
+	// Create a copy of connections to avoid holding lock during writes
+	connections := make([]*websocket.Conn, 0, len(ws.clients))
+	for conn := range ws.clients {
+		connections = append(connections, conn)
+	}
+	ws.clientsMu.RUnlock()
+
+	var failedConnections []*websocket.Conn
+	for _, conn := range connections {
+		if err := conn.WriteJSON(message); err != nil {
+			failedConnections = append(failedConnections, conn)
+		}
+	}
+
+	if len(failedConnections) > 0 {
+		ws.clientsMu.Lock()
+		for _, conn := range failedConnections {
+			delete(ws.clients, conn)
+			_ = conn.Close()
+		}
+		ws.clientsMu.Unlock()
+	}
+}
+
+// scheduleDebouncedSnapshot triggers a debounced snapshot broadcast using time.AfterFunc
+func (ws *WebServer) scheduleDebouncedSnapshot() {
+	ws.debounceMu.Lock()
+	// Stop any pending timer; ignoring Stop() result is acceptable here
+	if ws.debounceTimer != nil {
+		ws.debounceTimer.Stop()
+	}
+	ws.debounceTimer = time.AfterFunc(ws.debounceDelay, func() {
+		ws.broadcastSnapshot()
+	})
+	ws.debounceMu.Unlock()
 }
 
 // WaitForCompletionAck waits for the web client to acknowledge completion
