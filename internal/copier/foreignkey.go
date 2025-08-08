@@ -1,7 +1,9 @@
 package copier
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -209,7 +211,7 @@ func (fkm *ForeignKeyManager) TryUseReplicaMode() error {
 
 // DisableReplicaMode disables replica mode
 func (fkm *ForeignKeyManager) DisableReplicaMode() error {
-	if !fkm.useReplica {
+	if !fkm.IsUsingReplicaMode() {
 		return nil
 	}
 
@@ -315,10 +317,38 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 			continue
 		}
 
+		// If the constraint already exists and matches desired definition, skip recreation.
+		existsSig, exists, checkErr := fkm.getExistingFKSignature(fk.Schema, fk.Table, fk.ConstraintName)
+		if checkErr != nil {
+			fkm.logger.Warn("Failed to check existing FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), checkErr)
+		}
+		expectedSig := fkm.computeFKSignature(&fk)
+		if exists && existsSig == expectedSig {
+			fkm.logger.Info("Skipping recreate of FK %s on %s (unchanged)", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table))
+			restored++
+			fkm.mu.Lock()
+			delete(fkm.processedConstraints, constraintKey)
+			fkm.mu.Unlock()
+			continue
+		}
+
 		fkm.logger.Info("Restoring FK constraint %s on %s", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table))
 
 		_, err := fkm.db.Exec(fk.Definition)
 		if err != nil {
+			// If it already exists, check if it matches and treat as restored if so
+			if strings.Contains(strings.ToLower(err.Error()), "already exists") {
+				if exists {
+					if existsSig == expectedSig {
+						fkm.logger.Info("FK %s already exists and matches; marking as restored", utils.HighlightFKName(fk.ConstraintName))
+						restored++
+						fkm.mu.Lock()
+						delete(fkm.processedConstraints, constraintKey)
+						fkm.mu.Unlock()
+						continue
+					}
+				}
+			}
 			fkm.logger.Warn("Failed to restore FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), err)
 			// Keep it in the dropped list for later retry
 			remaining = append(remaining, fk)
@@ -347,6 +377,81 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 	}
 
 	return nil
+}
+
+// computeFKSignature creates a deterministic signature string for an FK definition.
+// It is suitable for hashing or direct equality comparison.
+func (fkm *ForeignKeyManager) computeFKSignature(fk *ForeignKey) string {
+	// Normalize case for actions and join lists with commas
+	onDelete := strings.ToUpper(strings.TrimSpace(fk.OnDelete))
+	if onDelete == "" {
+		onDelete = "NO ACTION"
+	}
+	onUpdate := strings.ToUpper(strings.TrimSpace(fk.OnUpdate))
+	if onUpdate == "" {
+		onUpdate = "NO ACTION"
+	}
+
+	cols := strings.Join(fk.Columns, ",")
+	refCols := strings.Join(fk.ReferencedColumns, ",")
+
+	// Build a canonical signature
+	base := fmt.Sprintf("%s.%s|%s|%s.%s|%s|del:%s|upd:%s",
+		fk.Schema, fk.Table, cols, fk.ReferencedSchema, fk.ReferencedTable, refCols, onDelete, onUpdate,
+	)
+	// Hash to compact and stabilize the signature length
+	sum := sha256.Sum256([]byte(base))
+	return hex.EncodeToString(sum[:])
+}
+
+// getExistingFKSignature returns the signature of an existing FK in the DB if present.
+func (fkm *ForeignKeyManager) getExistingFKSignature(schema, table, constraint string) (string, bool, error) {
+	// Query current FK definition parts for the given constraint
+	// #nosec G202 - identifiers are used via parameters
+	query := `
+		SELECT 
+			string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position) as columns,
+			ccu.table_schema AS referenced_schema,
+			ccu.table_name AS referenced_table,
+			string_agg(ccu.column_name, ',' ORDER BY kcu.ordinal_position) as referenced_columns,
+			rc.delete_rule,
+			rc.update_rule
+		FROM information_schema.table_constraints tc
+		JOIN information_schema.key_column_usage kcu 
+			ON tc.constraint_name = kcu.constraint_name 
+			AND tc.table_schema = kcu.table_schema
+		JOIN information_schema.constraint_column_usage ccu 
+			ON ccu.constraint_name = tc.constraint_name 
+			AND ccu.table_schema = tc.table_schema
+		JOIN information_schema.referential_constraints rc 
+			ON tc.constraint_name = rc.constraint_name 
+			AND tc.table_schema = rc.constraint_schema
+		WHERE tc.constraint_type = 'FOREIGN KEY'
+		  AND tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_name = $3
+		GROUP BY ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule`
+
+	row := fkm.db.QueryRow(query, schema, table, constraint)
+	var cols, refSchema, refTable, refCols, del, upd string
+	if err := row.Scan(&cols, &refSchema, &refTable, &refCols, &del, &upd); err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+
+	// Build a temporary FK object to reuse signature computation
+	tmp := ForeignKey{
+		ConstraintName:    constraint,
+		Schema:            schema,
+		Table:             table,
+		Columns:           strings.Split(cols, ","),
+		ReferencedSchema:  refSchema,
+		ReferencedTable:   refTable,
+		ReferencedColumns: strings.Split(refCols, ","),
+		OnDelete:          del,
+		OnUpdate:          upd,
+	}
+	return fkm.computeFKSignature(&tmp), true, nil
 }
 
 // dropForeignKey drops a specific foreign key constraint
