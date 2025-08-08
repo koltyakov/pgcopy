@@ -195,6 +195,11 @@ func (c *Copier) copyTable(table *TableInfo) error {
 		}
 	}
 
+	// After data load, ensure any sequences backing columns on this table are set correctly
+	if err := c.resetSequencesForTable(table); err != nil {
+		c.logger.Warn("Failed to reset sequences for %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
+	}
+
 	duration := time.Since(startTime)
 
 	// Log to copy.log file
