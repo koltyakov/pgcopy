@@ -207,6 +207,14 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 
 // Close closes database connections and web server
 func (c *Copier) Close() {
+	// Attempt graceful shutdown of web server first
+	if c.webServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := c.webServer.Shutdown(ctx); err != nil {
+			c.logger.Warn("Web server shutdown error: %v", err)
+		}
+	}
 	if c.sourceDB != nil {
 		if err := c.sourceDB.Close(); err != nil {
 			c.logger.Error("Failed to close source database connection: %v", err)
@@ -217,8 +225,6 @@ func (c *Copier) Close() {
 			c.logger.Error("Failed to close destination database connection: %v", err)
 		}
 	}
-	// Note: WebServer doesn't currently have a Stop method
-	// The HTTP server will be closed when the process terminates
 	if c.logFile != nil {
 		if err := c.logFile.Close(); err != nil {
 			// Can't use c.logger.Error here since we're closing the log file

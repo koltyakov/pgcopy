@@ -2,6 +2,7 @@
 package server
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -30,6 +31,10 @@ type WebServer struct {
 	debounceDelay time.Duration
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
+
+	// HTTP server & mux (for graceful shutdown and isolation from default mux)
+	srv *http.Server
+	mux *http.ServeMux
 }
 
 // NewWebServer creates a new web server instance
@@ -45,6 +50,7 @@ func NewWebServer(copyState *state.CopyState, port int) *WebServer {
 		},
 		completionAckChan: make(chan bool, 1), // Buffered channel for completion acknowledgment
 		debounceDelay:     100 * time.Millisecond,
+	mux:               http.NewServeMux(),
 	}
 }
 
@@ -54,26 +60,52 @@ func (ws *WebServer) Start() error {
 	ws.state.Subscribe(ws)
 
 	// Setup routes
-	http.HandleFunc("/", ws.handleIndex)
-	http.HandleFunc("/api/state", ws.handleAPIState)
-	http.HandleFunc("/ws", ws.handleWebSocket)
-	http.HandleFunc("/static/", ws.handleStatic)
+	ws.mux.HandleFunc("/", ws.handleIndex)
+	ws.mux.HandleFunc("/api/state", ws.handleAPIState)
+	ws.mux.HandleFunc("/ws", ws.handleWebSocket)
+	ws.mux.HandleFunc("/static/", ws.handleStatic)
 
 	fmt.Printf("🌐 Web interface available at: http://localhost:%d\n", ws.port)
 
 	go func() {
-		server := &http.Server{
+		ws.srv = &http.Server{
 			Addr:         fmt.Sprintf(":%d", ws.port),
-			Handler:      nil,
+			Handler:      ws.mux,
 			ReadTimeout:  30 * time.Second,
 			WriteTimeout: 30 * time.Second,
 			IdleTimeout:  60 * time.Second,
 		}
-		if err := server.ListenAndServe(); err != nil {
+		if err := ws.srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Printf("Web server error: %v\n", err)
 		}
 	}()
 
+	return nil
+}
+
+// Shutdown gracefully stops the web server and unsubscribes from state updates
+func (ws *WebServer) Shutdown(ctx context.Context) error {
+	// Unsubscribe from state changes
+	ws.state.Unsubscribe(ws)
+
+	// Close active websocket connections
+	ws.clientsMu.Lock()
+	for conn := range ws.clients {
+		_ = conn.Close()
+		delete(ws.clients, conn)
+	}
+	ws.clientsMu.Unlock()
+
+	// Stop debounced timer if active
+	ws.debounceMu.Lock()
+	if ws.debounceTimer != nil {
+		ws.debounceTimer.Stop()
+	}
+	ws.debounceMu.Unlock()
+
+	if ws.srv != nil {
+		return ws.srv.Shutdown(ctx)
+	}
 	return nil
 }
 

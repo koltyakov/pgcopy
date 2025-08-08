@@ -469,7 +469,7 @@ func (s *CopyState) GetTablesByStatus(status TableStatus) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var tables []string
+	tables := make([]string, 0)
 	for _, table := range s.Tables {
 		if table.Status == status {
 			tables = append(tables, fmt.Sprintf("%s.%s", table.Schema, table.Name))
