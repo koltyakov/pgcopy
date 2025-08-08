@@ -50,7 +50,7 @@ func NewWebServer(copyState *state.CopyState, port int) *WebServer {
 		},
 		completionAckChan: make(chan bool, 1), // Buffered channel for completion acknowledgment
 		debounceDelay:     100 * time.Millisecond,
-	mux:               http.NewServeMux(),
+		mux:               http.NewServeMux(),
 	}
 }
 

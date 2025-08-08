@@ -33,30 +33,6 @@ func NewInteractiveDisplay(state *state.CopyState) *InteractiveDisplay {
 	}
 }
 
-// StartTable is now a no-op since the state system handles this
-func (d *InteractiveDisplay) StartTable(_, _ string, _ int64) {
-	// Table state is now managed by the global state system
-	// This method is kept for compatibility but does nothing
-}
-
-// SetTotalRows is now a no-op since the state system handles this
-func (d *InteractiveDisplay) SetTotalRows(_ int64) {
-	// Total rows are now calculated from the global state
-	// This method is kept for compatibility but does nothing
-}
-
-// UpdateTableProgress is now a no-op since the state system handles this
-func (d *InteractiveDisplay) UpdateTableProgress(_, _ string, _ int64) {
-	// Table progress is now managed by the global state system
-	// This method is kept for compatibility but does nothing
-}
-
-// CompleteTable is now a no-op since the state system handles this
-func (d *InteractiveDisplay) CompleteTable(_, _ string, _ bool) {
-	// Table completion is now managed by the global state system
-	// This method is kept for compatibility but does nothing
-}
-
 // Start begins the interactive display loop
 func (d *InteractiveDisplay) Start() {
 	d.mu.Lock()

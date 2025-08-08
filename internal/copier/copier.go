@@ -596,22 +596,12 @@ func (c *Copier) removeTableFromProgress(_, _ string) {
 // startTableInInteractive starts tracking a table in interactive mode
 func (c *Copier) startTableInInteractive(table *TableInfo) {
 	c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCopying)
-
-	// Update interactive display if enabled
-	if c.interactiveMode && c.interactiveDisplay != nil {
-		c.interactiveDisplay.StartTable(table.Schema, table.Name, table.TotalRows)
-	}
 }
 
 // updateTableProgress updates the progress of a specific table
 func (c *Copier) updateTableProgress(schema, name string, copiedRows int64) {
 	// Update state system for proper tracking and WebSocket updates
 	c.state.UpdateTableProgress(schema, name, copiedRows)
-
-	// Update interactive display if available
-	if c.interactiveMode && c.interactiveDisplay != nil {
-		c.interactiveDisplay.UpdateTableProgress(schema, name, copiedRows)
-	}
 }
 
 // getTablesInProgress returns a slice of table names currently being processed
@@ -784,7 +774,6 @@ func (c *Copier) initializeDisplayMode(tables []*TableInfo, totalRows int64) {
 		// Use interactive mode
 		c.interactiveMode = true
 		c.interactiveDisplay = NewInteractiveDisplay(c.state)
-		c.interactiveDisplay.SetTotalRows(totalRows) // Set total rows for overall progress
 		c.interactiveDisplay.Start()
 		c.logger = utils.NewSilentLogger() // Silent logger for interactive mode
 		c.fkManager.SetLogger(c.logger)    // Update foreign key manager logger too

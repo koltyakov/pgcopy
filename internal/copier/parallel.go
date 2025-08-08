@@ -86,9 +86,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 
 			c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusFailed)
 			c.state.AddTableError(table.Schema, table.Name, err.Error(), nil)
-			if c.interactiveMode && c.interactiveDisplay != nil {
-				c.interactiveDisplay.CompleteTable(table.Schema, table.Name, false)
-			}
+			// Interactive display reads progress from state; no direct call needed
 		} else {
 			c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCompleted)
 			c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Completed copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
