@@ -629,19 +629,19 @@ func ValidateConfig(config *Config) error {
 	}
 
 	if config.SourceConn == "" {
-		return fmt.Errorf("--source connection string must be provided")
+		return fmt.Errorf("%w: --source connection string must be provided", utils.ErrInvalidConfig)
 	}
 	if config.DestConn == "" {
-		return fmt.Errorf("--dest connection string must be provided")
+		return fmt.Errorf("%w: --dest connection string must be provided", utils.ErrInvalidConfig)
 	}
 	if config.Parallel < 1 {
-		return fmt.Errorf("parallel workers must be at least 1")
+		return fmt.Errorf("%w: parallel workers must be at least 1", utils.ErrInvalidConfig)
 	}
 	if config.BatchSize < 100 {
-		return fmt.Errorf("batch size must be at least 100")
+		return fmt.Errorf("%w: batch size must be at least 100", utils.ErrInvalidConfig)
 	}
 	if config.CompressPipe && !config.UseCopyPipe {
-		return fmt.Errorf("--compress can only be used with --copy-pipe")
+		return fmt.Errorf("%w: --compress can only be used with --copy-pipe", utils.ErrInvalidConfig)
 	}
 	return nil
 }
@@ -659,10 +659,7 @@ func checkForFKBackupFile() error {
 
 	// Check if the backup file exists
 	if _, err := os.Stat(backupFile); err == nil {
-		return fmt.Errorf("found existing FK backup file '%s' - this indicates unrestored foreign keys from a previous run.\n"+
-			"Please restore foreign keys manually by executing: psql -f %s <connection_string>\n"+
-			"Or remove the file if you're certain all foreign keys are properly restored.\n"+
-			"This safety check prevents potential data integrity issues", backupFile, backupFile)
+		return fmt.Errorf("%w: found existing FK backup file '%s' - this indicates unrestored foreign keys from a previous run; restore them manually (see docs/foreign-keys.md) or remove the file if safe to do so", utils.ErrFKBackupExists, backupFile)
 	}
 
 	return nil

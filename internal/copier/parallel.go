@@ -3,6 +3,7 @@ package copier
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -55,7 +56,7 @@ func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) er
 	}
 
 	if len(errors) > 0 {
-		return fmt.Errorf("encountered %d errors during copy operation", len(errors))
+		return fmt.Errorf("%w: encountered %d errors during copy operation", utils.ErrCopyFailures, len(errors))
 	}
 
 	return nil
@@ -254,7 +255,13 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 					time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
 					continue
 				}
-				return err
+				if errors.Is(err, context.Canceled) {
+					return fmt.Errorf("%w: truncate canceled: %w", utils.ErrCanceled, err)
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					return fmt.Errorf("%w: truncate deadline exceeded: %w", utils.ErrDeadlineExceeded, err)
+				}
+				return fmt.Errorf("failed to truncate %s: %w", utils.QuoteTable(table.Schema, table.Name), err)
 			}
 
 			if err := tx.Commit(); err != nil {
@@ -263,7 +270,13 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 					time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
 					continue
 				}
-				return err
+				if errors.Is(err, context.Canceled) {
+					return fmt.Errorf("%w: commit canceled: %w", utils.ErrCanceled, err)
+				}
+				if errors.Is(err, context.DeadlineExceeded) {
+					return fmt.Errorf("%w: commit deadline exceeded: %w", utils.ErrDeadlineExceeded, err)
+				}
+				return fmt.Errorf("failed to commit truncate transaction: %w", err)
 			}
 			committed = true
 			return nil
@@ -277,7 +290,16 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 	tctx, cancel := context.WithTimeout(ctx, truncateTimeout)
 	defer cancel()
 	_, err := c.destDB.ExecContext(tctx, query)
-	return err
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return fmt.Errorf("%w: truncate canceled: %w", utils.ErrCanceled, err)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: truncate deadline exceeded: %w", utils.ErrDeadlineExceeded, err)
+		}
+		return fmt.Errorf("failed to clear destination table: %w", err)
+	}
+	return nil
 }
 
 // copyTableData copies table data in batches

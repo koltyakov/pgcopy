@@ -770,7 +770,7 @@ func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
 	}
 
 	if len(errors) > 0 {
-		return fmt.Errorf("encountered %d errors during backup recovery", len(errors))
+		return fmt.Errorf("%w: encountered %d errors during backup recovery", utils.ErrFKRecoveryFailed, len(errors))
 	}
 
 	return nil
