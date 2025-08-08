@@ -424,8 +424,8 @@ func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *s
 	}()
 
 	var batchSize int64
-	values := make([]interface{}, len(table.Columns))
-	valuePtrs := make([]interface{}, len(table.Columns))
+	values := make([]any, len(table.Columns))
+	valuePtrs := make([]any, len(table.Columns))
 
 	for i := range values {
 		valuePtrs[i] = &values[i]

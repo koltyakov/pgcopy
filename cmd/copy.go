@@ -83,6 +83,7 @@ Examples:
 		output, _ := cmd.Flags().GetString("output")
 		useCopyPipe, _ := cmd.Flags().GetBool("copy-pipe")
 		compressPipe, _ := cmd.Flags().GetBool("compress")
+		exactRows, _ := cmd.Flags().GetBool("exact-rows")
 		// Parse display mode
 		var displayMode copier.DisplayMode
 		switch output {
@@ -110,6 +111,7 @@ Examples:
 			OutputMode:    string(displayMode),
 			UseCopyPipe:   useCopyPipe,
 			CompressPipe:  compressPipe,
+			ExactRows:     exactRows,
 		}
 
 		start := time.Now()
@@ -211,4 +213,5 @@ func init() {
 	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface; auto on :8080 or random)")
 	copyCmd.Flags().Bool("copy-pipe", false, "Use streaming COPY pipeline (source->dest) instead of row fetch + insert")
 	copyCmd.Flags().Bool("compress", false, "Gzip-compress streaming COPY pipeline (requires --copy-pipe)")
+	copyCmd.Flags().Bool("exact-rows", false, "Use exact row counting (COUNT(*)) during discovery to avoid bad estimates after TRUNCATE; slower on large tables")
 }

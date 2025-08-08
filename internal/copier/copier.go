@@ -423,7 +423,7 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 		SELECT 
 			t.schemaname, 
 			t.tablename,
-			COALESCE(s.n_tup_ins + s.n_tup_upd + s.n_tup_del, 0) as approx_row_count
+			COALESCE(s.n_live_tup, 0) as approx_row_count
 		FROM pg_tables t
 		LEFT JOIN pg_stat_user_tables s ON t.schemaname = s.schemaname AND t.tablename = s.relname
 		WHERE t.schemaname NOT IN ('information_schema', 'pg_catalog', 'pg_toast')
@@ -453,11 +453,25 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 			continue
 		}
 
+		// Determine base row count (approximate or precise)
+		totalRows := rowCount.Int64
+		if c.config.ExactRows {
+			// Precise COUNT(*) with a short timeout per table to avoid blocking overall discovery
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			//nolint:gosec // G201: identifiers can't be parameterized; schema/table are validated and safely quoted via utils.QuoteTable
+			preciseQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s", utils.QuoteTable(schema, name))
+			if err := c.sourceDB.QueryRowContext(ctx, preciseQuery).Scan(&totalRows); err != nil {
+				// Fallback to approximate on error/timeout
+				c.logger.Warn("Precise row count failed for %s: %v", utils.HighlightTableName(schema, name), err)
+			}
+		}
+
 		tableInfo := &TableInfo{
 			Schema:    schema,
 			Name:      name,
 			FullName:  fmt.Sprintf("%s.%s", schema, name),
-			TotalRows: rowCount.Int64,
+			TotalRows: totalRows,
 		} // Get column information
 		if err := c.getTableColumns(tableInfo); err != nil {
 			c.logger.Warn("Failed to get columns for %s: %v", utils.HighlightTableName(schema, name), err)

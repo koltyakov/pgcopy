@@ -71,6 +71,11 @@ type OperationConfig struct {
 	OutputMode    string   `json:"outputMode"`
 	UseCopyPipe   bool     `json:"useCopyPipe"`  // Stream source->dest with COPY ... TO STDOUT / FROM STDIN
 	CompressPipe  bool     `json:"compressPipe"` // Gzip compress COPY stream in-flight (local pipe)
+
+	// Row count behavior
+	// When true, pgcopy will compute exact row counts using COUNT(*) per table during discovery.
+	// This is slower but avoids inaccurate estimates (e.g., after TRUNCATE).
+	ExactRows bool `json:"exactRows"`
 }
 
 // ConnectionDetails holds information about source and destination connections
@@ -225,13 +230,13 @@ type Summary struct {
 
 // LogEntry represents a log message
 type LogEntry struct {
-	ID        string                 `json:"id"`
-	Timestamp time.Time              `json:"timestamp"`
-	Level     LogLevel               `json:"level"`
-	Message   string                 `json:"message"`
-	Table     string                 `json:"table,omitempty"`
-	Component string                 `json:"component"` // "copier", "fk_manager", "validator", etc.
-	Context   map[string]interface{} `json:"context,omitempty"`
+	ID        string         `json:"id"`
+	Timestamp time.Time      `json:"timestamp"`
+	Level     LogLevel       `json:"level"`
+	Message   string         `json:"message"`
+	Table     string         `json:"table,omitempty"`
+	Component string         `json:"component"` // "copier", "fk_manager", "validator", etc.
+	Context   map[string]any `json:"context,omitempty"`
 }
 
 // LogLevel represents log severity
@@ -250,37 +255,37 @@ const (
 
 // ErrorEntry represents an error that occurred during the operation
 type ErrorEntry struct {
-	ID        string                 `json:"id"`
-	Timestamp time.Time              `json:"timestamp"`
-	Type      string                 `json:"type"`
-	Message   string                 `json:"message"`
-	Table     string                 `json:"table,omitempty"`
-	Component string                 `json:"component"`
-	Context   map[string]interface{} `json:"context,omitempty"`
-	Stack     string                 `json:"stack,omitempty"`
-	IsFatal   bool                   `json:"isFatal"`
-	IsRetried bool                   `json:"isRetried"`
+	ID        string         `json:"id"`
+	Timestamp time.Time      `json:"timestamp"`
+	Type      string         `json:"type"`
+	Message   string         `json:"message"`
+	Table     string         `json:"table,omitempty"`
+	Component string         `json:"component"`
+	Context   map[string]any `json:"context,omitempty"`
+	Stack     string         `json:"stack,omitempty"`
+	IsFatal   bool           `json:"isFatal"`
+	IsRetried bool           `json:"isRetried"`
 }
 
 // TableError represents an error specific to a table operation
 type TableError struct {
-	ID        string                 `json:"id"`
-	Timestamp time.Time              `json:"timestamp"`
-	Type      string                 `json:"type"`
-	Message   string                 `json:"message"`
-	RowNumber *int64                 `json:"rowNumber,omitempty"`
-	Context   map[string]interface{} `json:"context,omitempty"`
-	IsRetried bool                   `json:"isRetried"`
+	ID        string         `json:"id"`
+	Timestamp time.Time      `json:"timestamp"`
+	Type      string         `json:"type"`
+	Message   string         `json:"message"`
+	RowNumber *int64         `json:"rowNumber,omitempty"`
+	Context   map[string]any `json:"context,omitempty"`
+	IsRetried bool           `json:"isRetried"`
 }
 
 // Warning represents a warning message
 type Warning struct {
-	ID        string                 `json:"id"`
-	Timestamp time.Time              `json:"timestamp"`
-	Type      string                 `json:"type"`
-	Message   string                 `json:"message"`
-	Table     string                 `json:"table,omitempty"`
-	Context   map[string]interface{} `json:"context,omitempty"`
+	ID        string         `json:"id"`
+	Timestamp time.Time      `json:"timestamp"`
+	Type      string         `json:"type"`
+	Message   string         `json:"message"`
+	Table     string         `json:"table,omitempty"`
+	Context   map[string]any `json:"context,omitempty"`
 }
 
 // Metrics holds real-time performance metrics
@@ -325,10 +330,10 @@ type Listener interface {
 
 // Event represents different types of state changes
 type Event struct {
-	Type      EventType              `json:"type"`
-	Timestamp time.Time              `json:"timestamp"`
-	Data      map[string]interface{} `json:"data,omitempty"`
-	TableName string                 `json:"tableName,omitempty"`
+	Type      EventType      `json:"type"`
+	Timestamp time.Time      `json:"timestamp"`
+	Data      map[string]any `json:"data,omitempty"`
+	TableName string         `json:"tableName,omitempty"`
 }
 
 // EventType represents the type of state change event

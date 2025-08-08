@@ -41,6 +41,15 @@ See docs/wildcards.md for patterns.
 
 - `pgcopy list --source "postgres://user:pass@host:5432/db"`
 
+## Accurate row counts (optional)
+
+By default, row counts are estimated (fast). If tables were recently truncated, estimates can be misleading.
+Use `--exact-rows` to compute precise counts with COUNT(*):
+
+- `pgcopy copy --source "..." --dest "..." --exact-rows`
+
+Note: this can be slower on very large tables.
+
 ## Troubleshooting tips
 
 - Connection strings: standard postgres:// URIs; env vars like PGPASSWORD are respected

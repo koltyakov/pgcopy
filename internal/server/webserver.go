@@ -134,7 +134,7 @@ func (ws *WebServer) handleAPIState(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"type":  "state_snapshot",
 		"state": snapshot,
 	})
@@ -156,7 +156,7 @@ func (ws *WebServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Send initial state (protected by write mutex)
 	snapshot := ws.state.GetSnapshot()
-	initialMessage := map[string]interface{}{
+	initialMessage := map[string]any{
 		"type":  "state_snapshot",
 		"state": snapshot,
 	}
@@ -184,7 +184,7 @@ func (ws *WebServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		// Handle JSON messages from client
 		if messageType == websocket.TextMessage {
-			var msg map[string]interface{}
+			var msg map[string]any
 			if err := json.Unmarshal(message, &msg); err == nil {
 				if msgType, ok := msg["type"].(string); ok && msgType == "completion_ack" {
 					// Signal completion acknowledgment received
@@ -218,7 +218,7 @@ func (ws *WebServer) broadcastStateUpdate(event state.Event) {
 		return
 	}
 
-	message := map[string]interface{}{
+	message := map[string]any{
 		"type":      "state_event",
 		"event":     event,
 		"timestamp": time.Now(),
@@ -229,7 +229,7 @@ func (ws *WebServer) broadcastStateUpdate(event state.Event) {
 		event.Type == state.EventOperationCompleted ||
 		event.Type == state.EventTableCompleted {
 		snapshot := ws.state.GetSnapshot()
-		message = map[string]interface{}{
+		message = map[string]any{
 			"type":  "state_snapshot",
 			"state": snapshot,
 		}
@@ -276,7 +276,7 @@ func (ws *WebServer) broadcastSnapshot() {
 	}
 
 	snapshot := ws.state.GetSnapshot()
-	message := map[string]interface{}{
+	message := map[string]any{
 		"type":  "state_snapshot",
 		"state": snapshot,
 	}

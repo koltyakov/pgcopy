@@ -94,6 +94,7 @@ Copy data from source to destination database.
 - `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web dashboard)
 - `--copy-pipe`: Use streaming COPY pipeline (source→dest) instead of row fetch + insert
 - `--compress`: Gzip-compress streaming COPY pipeline (requires `--copy-pipe`)
+- `--exact-rows`: Compute exact source row counts with `COUNT(*)` during discovery to avoid bad estimates after TRUNCATE (slower on large tables)
 
 ### `list`
 

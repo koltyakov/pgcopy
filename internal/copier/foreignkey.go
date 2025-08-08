@@ -105,7 +105,7 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 	// We only interpolate the placeholder markers ($1,$2,...) which are not user input.
 	// #nosec G201
 	placeholders := make([]string, len(tableFilters))
-	args := make([]interface{}, len(tableFilters))
+	args := make([]any, len(tableFilters))
 	for i, tf := range tableFilters {
 		placeholders[i] = fmt.Sprintf("$%d", i+1)
 		args[i] = tf

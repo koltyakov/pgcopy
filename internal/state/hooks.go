@@ -35,7 +35,7 @@ func (s *CopyState) SetStatus(status OperationStatus) {
 	event = Event{
 		Type:      EventOperationStarted,
 		Timestamp: time.Now(),
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"oldStatus": oldStatus,
 			"newStatus": status,
 		},
@@ -130,7 +130,7 @@ func (s *CopyState) UpdateTableStatus(schema, name string, status TableStatus) {
 		Type:      eventType,
 		Timestamp: now,
 		TableName: table.FullName,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"oldStatus": oldStatus,
 			"newStatus": status,
 		},
@@ -186,7 +186,7 @@ func (s *CopyState) UpdateTableProgress(schema, name string, syncedRows int64) {
 		Type:      EventTableProgress,
 		Timestamp: time.Now(),
 		TableName: table.FullName,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"syncedRows": syncedRows,
 			"progress":   table.Progress,
 			"speed":      table.Speed,
@@ -199,7 +199,7 @@ func (s *CopyState) UpdateTableProgress(schema, name string, syncedRows int64) {
 }
 
 // AddTableError adds an error to a specific table
-func (s *CopyState) AddTableError(schema, name string, errorMsg string, context map[string]interface{}) {
+func (s *CopyState) AddTableError(schema, name string, errorMsg string, context map[string]any) {
 	var event Event
 
 	s.mu.Lock()
@@ -227,7 +227,7 @@ func (s *CopyState) AddTableError(schema, name string, errorMsg string, context 
 		Type:      EventErrorAdded,
 		Timestamp: time.Now(),
 		TableName: table.FullName,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"error": tableError,
 		},
 	}
@@ -238,7 +238,7 @@ func (s *CopyState) AddTableError(schema, name string, errorMsg string, context 
 }
 
 // AddLog adds a log entry to the state
-func (s *CopyState) AddLog(level LogLevel, message string, component string, table string, context map[string]interface{}) {
+func (s *CopyState) AddLog(level LogLevel, message string, component string, table string, context map[string]any) {
 	var event Event
 
 	s.mu.Lock()
@@ -263,7 +263,7 @@ func (s *CopyState) AddLog(level LogLevel, message string, component string, tab
 	event = Event{
 		Type:      EventLogAdded,
 		Timestamp: time.Now(),
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"log": logEntry,
 		},
 	}
@@ -274,7 +274,7 @@ func (s *CopyState) AddLog(level LogLevel, message string, component string, tab
 }
 
 // AddError adds a global error to the state
-func (s *CopyState) AddError(errorType, message, component string, isFatal bool, context map[string]interface{}) {
+func (s *CopyState) AddError(errorType, message, component string, isFatal bool, context map[string]any) {
 	var event Event
 
 	s.mu.Lock()
@@ -294,7 +294,7 @@ func (s *CopyState) AddError(errorType, message, component string, isFatal bool,
 	event = Event{
 		Type:      EventErrorAdded,
 		Timestamp: time.Now(),
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"error": errorEntry,
 		},
 	}
@@ -317,7 +317,7 @@ func (s *CopyState) UpdateForeignKeys(mode string, isUsingReplica bool, totalFKs
 	event = Event{
 		Type:      EventFKDetected,
 		Timestamp: time.Now(),
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"mode":        mode,
 			"totalFKs":    totalFKs,
 			"replicaMode": isUsingReplica,
@@ -370,7 +370,7 @@ func (s *CopyState) UpdateMetrics(metrics Metrics) {
 	event = Event{
 		Type:      EventMetricsUpdated,
 		Timestamp: now,
-		Data: map[string]interface{}{
+		Data: map[string]any{
 			"metrics": metrics,
 		},
 	}

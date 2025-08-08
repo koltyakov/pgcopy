@@ -22,6 +22,7 @@ Guidance and notes for getting the best throughput.
 - Prefer COPY + compress on high latency or low bandwidth links
 - Ensure adequate resources on both source and destination
 - Monitor memory usage relative to workers and batch sizes
+- Use `--exact-rows` only when you need precise counts (e.g., recently truncated tables); it adds COUNT(*) per table during discovery and can slow startups on very large tables
 
 ## Real-world examples
 

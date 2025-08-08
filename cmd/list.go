@@ -83,7 +83,7 @@ type TableSummary struct {
 
 func getTables(db *sql.DB, schema string) ([]TableSummary, error) {
 	var query string
-	var args []interface{}
+	var args []any
 
 	if schema != "" {
 		query = `
