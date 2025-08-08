@@ -80,7 +80,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCopying)
 		c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
 
-		if err := c.copyTable(table); err != nil {
+		if err := c.copyTable(ctx, table); err != nil {
 			c.logger.Error("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
 
@@ -151,7 +151,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 }
 
 // copyTable copies a single table from source to destination
-func (c *Copier) copyTable(table *TableInfo) error {
+func (c *Copier) copyTable(ctx context.Context, table *TableInfo) error {
 	startTime := time.Now()
 
 	if table.TotalRows == 0 {
@@ -169,19 +169,20 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	}
 
 	// Clear destination table first
-	if err := c.clearDestinationTable(table); err != nil {
+	if err := c.clearDestinationTable(ctx, table); err != nil {
 		return fmt.Errorf("failed to clear destination table: %w", err)
 	}
 
 	var err error
 	if c.config.UseCopyPipe {
 		// Use streaming COPY pipeline
-		ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour) // generous timeout; could be configurable
+		// Derive a generous timeout from provided ctx to avoid infinite runs
+		sctx, cancel := context.WithTimeout(ctx, 24*time.Hour) // configurable in the future
 		defer cancel()
-		err = c.copyTableViaPipe(ctx, table)
+		err = c.copyTableViaPipe(sctx, table)
 	} else {
 		// Copy data in batches (legacy path)
-		err = c.copyTableData(table)
+		err = c.copyTableData(ctx, table)
 	}
 
 	if err != nil {
@@ -196,7 +197,7 @@ func (c *Copier) copyTable(table *TableInfo) error {
 	}
 
 	// After data load, ensure any sequences backing columns on this table are set correctly
-	if err := c.resetSequencesForTable(table); err != nil {
+	if err := c.resetSequencesForTable(ctx, table); err != nil {
 		c.logger.Warn("Failed to reset sequences for %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 	}
 
@@ -211,13 +212,13 @@ func (c *Copier) copyTable(table *TableInfo) error {
 }
 
 // clearDestinationTable truncates the destination table
-func (c *Copier) clearDestinationTable(table *TableInfo) error {
+func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) error {
 	if c.fkManager.IsUsingReplicaMode() {
 		// Use a transaction with replica mode for the truncate
 		// retry loop to mitigate deadlocks
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
-			tx, err := c.destDB.Begin()
+			tx, err := c.destDB.BeginTx(ctx, &sql.TxOptions{})
 			if err != nil {
 				return fmt.Errorf("failed to begin transaction for truncate: %w", err)
 			}
@@ -231,13 +232,13 @@ func (c *Copier) clearDestinationTable(table *TableInfo) error {
 				}
 			}(tx)
 
-			if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
+			if _, err := tx.ExecContext(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("failed to set replica mode for truncate: %w", err)
 			}
 
 			query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
-			if _, err := tx.Exec(query); err != nil {
+			if _, err := tx.ExecContext(ctx, query); err != nil {
 				lastErr = err
 				_ = tx.Rollback()
 				// deadlock code 40P01
@@ -265,12 +266,12 @@ func (c *Copier) clearDestinationTable(table *TableInfo) error {
 		return fmt.Errorf("truncate failed for %s.\"%s\" for unknown reason", table.Schema, table.Name)
 	}
 	query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
-	_, err := c.destDB.Exec(query)
+	_, err := c.destDB.ExecContext(ctx, query)
 	return err
 }
 
 // copyTableData copies table data in batches
-func (c *Copier) copyTableData(table *TableInfo) error {
+func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 	columnList := strings.Join(func() []string {
 		quotedColumns := make([]string, len(table.Columns))
 		for i, col := range table.Columns {
@@ -290,7 +291,7 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 		table.Schema, table.Name, columnList, placeholderList,
 	)
 
-	insertStmt, err := c.destDB.Prepare(insertQuery)
+	insertStmt, err := c.destDB.PrepareContext(ctx, insertQuery)
 	if err != nil {
 		return fmt.Errorf("failed to prepare insert statement: %w", err)
 	}
@@ -322,12 +323,12 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 
 	for {
 		// Select batch from source
-		rows, err := c.sourceDB.Query(selectQuery, offset)
+		rows, err := c.sourceDB.QueryContext(ctx, selectQuery, offset)
 		if err != nil {
 			return fmt.Errorf("failed to select batch: %w", err)
 		}
 
-		batchRowsCopied, err := c.processBatch(rows, insertStmt, table)
+		batchRowsCopied, err := c.processBatch(ctx, rows, insertStmt, table)
 		if err := rows.Close(); err != nil {
 			c.logger.Error("Failed to close batch rows: %v", err)
 		}
@@ -356,8 +357,8 @@ func (c *Copier) copyTableData(table *TableInfo) error {
 }
 
 // processBatch processes a batch of rows
-func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *TableInfo) (int64, error) {
-	tx, err := c.destDB.Begin()
+func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *sql.Stmt, table *TableInfo) (int64, error) {
+	tx, err := c.destDB.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -373,7 +374,7 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 
 	// Set replica mode for this transaction if FK manager is using it
 	if c.fkManager.IsUsingReplicaMode() {
-		if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
+		if _, err := tx.ExecContext(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
 			return 0, fmt.Errorf("failed to set replica mode for transaction: %w", err)
 		}
 	}
@@ -398,7 +399,7 @@ func (c *Copier) processBatch(rows *sql.Rows, insertStmt *sql.Stmt, table *Table
 			return batchSize, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		if _, err := txStmt.Exec(values...); err != nil {
+		if _, err := txStmt.ExecContext(ctx, values...); err != nil {
 			return batchSize, fmt.Errorf("failed to insert row: %w", err)
 		}
 

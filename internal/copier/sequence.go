@@ -1,13 +1,14 @@
 package copier
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 )
 
 // resetSequencesForTable detects columns backed by sequences and adjusts the sequence's last value
 // so that nextval() continues from MAX(column) (or from the sequence start if the table is empty).
-func (c *Copier) resetSequencesForTable(table *TableInfo) error { //nolint:funlen
+func (c *Copier) resetSequencesForTable(ctx context.Context, table *TableInfo) error { //nolint:funlen
 	// Discover sequence-backed columns using pg_get_serial_sequence
 	// Then read start_value from pg_sequence (OID join via regclass)
 	const seqQuery = `
@@ -32,7 +33,7 @@ FROM seqs s
 JOIN pg_sequences ps
 	ON (ps.schemaname || '.' || ps.sequencename) = s.seq_regclass::text`
 
-	rows, err := c.destDB.Query(seqQuery, table.Schema, table.Name)
+	rows, err := c.destDB.QueryContext(ctx, seqQuery, table.Schema, table.Name)
 	if err != nil {
 		return fmt.Errorf("failed to query sequences for %s.%s: %w", table.Schema, table.Name, err)
 	}
@@ -76,7 +77,7 @@ JOIN pg_sequences ps
 		maxQuery := fmt.Sprintf( // #nosec G201 - identifiers originate from system catalogs and are safely double-quoted
 			`SELECT MAX("%s") FROM %s."%s"`, s.columnName, table.Schema, table.Name)
 		var maxVal sql.NullInt64
-		if err := c.destDB.QueryRow(maxQuery).Scan(&maxVal); err != nil {
+		if err := c.destDB.QueryRowContext(ctx, maxQuery).Scan(&maxVal); err != nil {
 			return fmt.Errorf("failed to compute MAX(%s) for %s.%s: %w", s.columnName, table.Schema, table.Name, err)
 		}
 
@@ -96,7 +97,7 @@ JOIN pg_sequences ps
 		}
 
 		// Use setval(text, bigint, boolean) with parameters to avoid quoting issues
-		if _, err := c.destDB.Exec(`SELECT setval($1::regclass, $2, $3)`, s.seqFullname, setTo, isCalled); err != nil {
+		if _, err := c.destDB.ExecContext(ctx, `SELECT setval($1::regclass, $2, $3)`, s.seqFullname, setTo, isCalled); err != nil {
 			return fmt.Errorf("failed to set sequence %s to %d (is_called=%t): %w", s.seqFullname, setTo, isCalled, err)
 		}
 		c.logger.Info("Sequence %s aligned to %d (is_called=%t) for %s.%s.%s", s.seqFullname, setTo, isCalled, table.Schema, table.Name, s.columnName)

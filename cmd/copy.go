@@ -175,9 +175,23 @@ Examples:
 			}
 			defer dataCopier.Close()
 
-			if err := dataCopier.Copy(ctx); err != nil {
-				duration := time.Since(start)
-				log.Fatalf("Copy operation failed after %s: %v", utils.FormatDuration(duration), err)
+			// Graceful shutdown: cancel ctx on SIGINT/SIGTERM
+			c := make(chan os.Signal, 1)
+			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+			done := make(chan error, 1)
+			go func() { done <- dataCopier.Copy(ctx) }()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					duration := time.Since(start)
+					log.Fatalf("Copy operation failed after %s: %v", utils.FormatDuration(duration), err)
+				}
+			case <-c:
+				fmt.Printf("\n⏹️  Operation cancelled by user\n")
+				cancel()
+				return
 			}
 		}
 	},
