@@ -89,6 +89,8 @@ func (d *InteractiveDisplay) Stop() {
 	// Clear screen and move to bottom
 	d.clearScreen()
 	fmt.Println()
+
+	// Interactive mode stays quiet on errors; a full error summary is written to copy.log at the end.
 }
 
 // render updates the display

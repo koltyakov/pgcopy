@@ -173,8 +173,16 @@ func (c *Copier) copyTable(table *TableInfo) error {
 		return fmt.Errorf("failed to clear destination table: %w", err)
 	}
 
-	// Copy data in batches
-	err := c.copyTableData(table)
+	var err error
+	if c.config.UseCopyPipe {
+		// Use streaming COPY pipeline
+		ctx, cancel := context.WithTimeout(context.Background(), 24*time.Hour) // generous timeout; could be configurable
+		defer cancel()
+		err = c.copyTableViaPipe(ctx, table)
+	} else {
+		// Copy data in batches (legacy path)
+		err = c.copyTableData(table)
+	}
 
 	if err != nil {
 		return err
@@ -201,34 +209,55 @@ func (c *Copier) copyTable(table *TableInfo) error {
 func (c *Copier) clearDestinationTable(table *TableInfo) error {
 	if c.fkManager.IsUsingReplicaMode() {
 		// Use a transaction with replica mode for the truncate
-		tx, err := c.destDB.Begin()
-		if err != nil {
-			return fmt.Errorf("failed to begin transaction for truncate: %w", err)
-		}
-
-		committed := false
-		defer func() {
-			if !committed {
-				if err := tx.Rollback(); err != nil {
-					c.logger.Error("Failed to rollback truncate transaction: %v", err)
-				}
+		// retry loop to mitigate deadlocks
+		var lastErr error
+		for attempt := 0; attempt < 3; attempt++ {
+			tx, err := c.destDB.Begin()
+			if err != nil {
+				return fmt.Errorf("failed to begin transaction for truncate: %w", err)
 			}
-		}()
 
-		if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
-			return fmt.Errorf("failed to set replica mode for truncate: %w", err)
-		}
+			committed := false
+			defer func(tx *sql.Tx) {
+				if !committed {
+					if err := tx.Rollback(); err != nil {
+						c.logger.Error("Failed to rollback truncate transaction: %v", err)
+					}
+				}
+			}(tx)
 
-		query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
-		if _, err := tx.Exec(query); err != nil {
-			return err
-		}
+			if _, err := tx.Exec("SET LOCAL session_replication_role = replica"); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("failed to set replica mode for truncate: %w", err)
+			}
 
-		err = tx.Commit()
-		if err == nil {
+			query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
+			if _, err := tx.Exec(query); err != nil {
+				lastErr = err
+				_ = tx.Rollback()
+				// deadlock code 40P01
+				if strings.Contains(err.Error(), "deadlock detected") || strings.Contains(err.Error(), "40P01") {
+					time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+					continue
+				}
+				return err
+			}
+
+			if err := tx.Commit(); err != nil {
+				lastErr = err
+				if strings.Contains(err.Error(), "deadlock detected") || strings.Contains(err.Error(), "40P01") {
+					time.Sleep(time.Duration(100*(attempt+1)) * time.Millisecond)
+					continue
+				}
+				return err
+			}
 			committed = true
+			return nil
 		}
-		return err
+		if lastErr != nil {
+			return lastErr
+		}
+		return fmt.Errorf("truncate failed for %s.\"%s\" for unknown reason", table.Schema, table.Name)
 	}
 	query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
 	_, err := c.destDB.Exec(query)

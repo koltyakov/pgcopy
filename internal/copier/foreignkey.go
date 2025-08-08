@@ -243,9 +243,8 @@ func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 	}
 
 	if len(relatedFKs) > 0 {
-		if fkm.useReplica {
-			// fkm.logger.Info("Foreign keys for %s handled via replica mode (%s constraints)",
-			// 	highlightTableName(table.Schema, table.Name), highlightNumber(len(relatedFKs)))
+		if fkm.IsUsingReplicaMode() {
+			// Replica mode handles FKs without dropping
 			return nil
 		}
 		fkm.logger.Info("Managing %s foreign key constraint(s) for table %s",
@@ -265,7 +264,7 @@ func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 
 // RestoreForeignKeysForTable restores foreign keys related to a specific table
 func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error {
-	if fkm.useReplica {
+	if fkm.IsUsingReplicaMode() {
 		// No need to restore in replica mode
 		return nil
 	}
@@ -529,7 +528,7 @@ func (fkm *ForeignKeyManager) CleanupBackupFile() error {
 
 // RecoverFromBackupFile attempts to restore FKs from backup file if they exist but weren't tracked
 func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
-	if fkm.useReplica {
+	if fkm.IsUsingReplicaMode() {
 		return nil
 	}
 

@@ -50,7 +50,7 @@ func (c *Copier) printStats() {
 	// Errors section (if any)
 	if len(c.state.Errors) > 0 {
 		fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
-		fmt.Printf("║                          ⚠️  ERRORS                          ║\n")
+		fmt.Printf("║                          ⚠️  ERRORS                           ║\n")
 		fmt.Printf("╠══════════════════════════════════════════════════════════════╣\n")
 
 		for i, err := range c.state.Errors {
@@ -59,7 +59,7 @@ func (c *Copier) printStats() {
 			if len(errorText) > 55 {
 				errorText = errorText[:52] + "..."
 			}
-			fmt.Printf("║  %d. %-55s ║\n", i+1, errorText)
+			fmt.Printf("║  %d. %-55s  ║\n", i+1, errorText)
 		}
 	}
 

@@ -69,6 +69,8 @@ type OperationConfig struct {
 	DryRun        bool     `json:"dryRun"`
 	SkipBackup    bool     `json:"skipBackup"`
 	OutputMode    string   `json:"outputMode"`
+	UseCopyPipe   bool     `json:"useCopyPipe"`  // Stream source->dest with COPY ... TO STDOUT / FROM STDIN
+	CompressPipe  bool     `json:"compressPipe"` // Gzip compress COPY stream in-flight (local pipe)
 }
 
 // ConnectionDetails holds information about source and destination connections

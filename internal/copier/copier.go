@@ -313,7 +313,7 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy len
 				fmt.Println("Proceeding without web client acknowledgment")
 			}
 		}
-		return err
+		// Do not stop interactive display here; allow normal finalization below.
 	}
 
 	// FK cleanup
@@ -354,7 +354,13 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy len
 		totalDuration := time.Since(c.state.StartTime)
 		c.fileLogger.Printf("%s | COPY_COMPLETE | %d tables | %d rows | %s", timestamp, c.state.Summary.CompletedTables, c.state.Summary.SyncedRows, utils.FormatLogDuration(totalDuration))
 	}
-	return nil
+
+	// Write any collected errors to copy.log now that the run is finished
+	c.logCollectedErrorsToFile()
+	// Print concise error summary to STDOUT at the very end (especially for interactive mode)
+	c.printCollectedErrorsToStdout()
+
+	return err
 }
 
 // getTablesToCopy returns the list of tables to copy based on configuration
@@ -631,6 +637,9 @@ func ValidateConfig(config *Config) error {
 	if config.BatchSize < 100 {
 		return fmt.Errorf("batch size must be at least 100")
 	}
+	if config.CompressPipe && !config.UseCopyPipe {
+		return fmt.Errorf("--compress can only be used with --copy-pipe")
+	}
 	return nil
 }
 
@@ -666,6 +675,85 @@ func (c *Copier) initFileLogger() error {
 
 	c.fileLogger = log.New(c.logFile, "", 0) // No prefix, we'll format our own timestamps
 	return nil
+}
+
+// logCollectedErrorsToFile flushes all accumulated errors to copy.log
+func (c *Copier) logCollectedErrorsToFile() {
+	if c.fileLogger == nil {
+		return
+	}
+	snapshot := c.state.GetSnapshot()
+	if len(snapshot.Errors) == 0 {
+		return
+	}
+	c.fileLogger.Printf("%s | ERRORS_SUMMARY | total=%d", time.Now().Format("2006-01-02 15:04:05"), len(snapshot.Errors))
+	for _, e := range snapshot.Errors {
+		ts := e.Timestamp.Format("2006-01-02 15:04:05")
+		table := e.Table
+		if table == "" {
+			table = "-"
+		}
+		c.fileLogger.Printf("%s | ERROR | component=%s | table=%s | %s", ts, e.Component, table, e.Message)
+	}
+	// Also include table-specific errors if present
+	for _, t := range snapshot.Tables {
+		if len(t.Errors) == 0 {
+			continue
+		}
+		for _, te := range t.Errors {
+			ts := te.Timestamp.Format("2006-01-02 15:04:05")
+			c.fileLogger.Printf("%s | TABLE_ERROR | table=%s.%s | %s", ts, t.Schema, t.Name, te.Message)
+		}
+	}
+}
+
+// printCollectedErrorsToStdout prints a concise summary of errors at the end of the run
+func (c *Copier) printCollectedErrorsToStdout() {
+	snapshot := c.state.GetSnapshot()
+	if len(snapshot.Errors) == 0 {
+		// Also consider table-level errors if operation-level list is empty
+		hasTableErrors := false
+		for _, t := range snapshot.Tables {
+			if len(t.Errors) > 0 {
+				hasTableErrors = true
+				break
+			}
+		}
+		if !hasTableErrors {
+			return
+		}
+	}
+
+	fmt.Println()
+	fmt.Printf("Errors encountered: %d\n", len(snapshot.Errors))
+	maxToShow := 10
+	for i, e := range snapshot.Errors {
+		if i >= maxToShow {
+			fmt.Printf("  ... and %d more errors\n", len(snapshot.Errors)-maxToShow)
+			break
+		}
+		table := e.Table
+		if table == "" {
+			table = "-"
+		}
+		fmt.Printf("  [%s] %s: %s\n", e.Component, table, e.Message)
+	}
+	// Also print first few table errors
+	shown := 0
+	for _, t := range snapshot.Tables {
+		for _, te := range t.Errors {
+			if len(snapshot.Errors) >= maxToShow && shown >= 0 {
+				// If operation errors already filled, skip extra table errors
+				break
+			}
+			if shown >= maxToShow {
+				break
+			}
+			fmt.Printf("  [table] %s.%s: %s\n", t.Schema, t.Name, te.Message)
+			shown++
+		}
+	}
+	fmt.Println("\nSee copy.log for full details.")
 }
 
 // logTableCopy logs table copy operation to the copy.log file

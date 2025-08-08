@@ -81,6 +81,8 @@ Examples:
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		skipBackup, _ := cmd.Flags().GetBool("skip-backup")
 		output, _ := cmd.Flags().GetString("output")
+		useCopyPipe, _ := cmd.Flags().GetBool("copy-pipe")
+		compressPipe, _ := cmd.Flags().GetBool("compress")
 		// Parse display mode
 		var displayMode copier.DisplayMode
 		switch output {
@@ -106,6 +108,8 @@ Examples:
 			DryRun:        dryRun,
 			SkipBackup:    skipBackup,
 			OutputMode:    string(displayMode),
+			UseCopyPipe:   useCopyPipe,
+			CompressPipe:  compressPipe,
 		}
 
 		start := time.Now()
@@ -191,4 +195,6 @@ func init() {
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("skip-backup", false, "Skip confirmation dialog for data overwrite")
 	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface; auto on :8080 or random)")
+	copyCmd.Flags().Bool("copy-pipe", false, "Use streaming COPY pipeline (source->dest) instead of row fetch + insert")
+	copyCmd.Flags().Bool("compress", false, "Gzip-compress streaming COPY pipeline (requires --copy-pipe)")
 }
