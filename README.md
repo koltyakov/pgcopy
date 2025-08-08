@@ -4,25 +4,7 @@
 
 ![pgcopy in action](./assets/pgcopy.gif)
 
-## ⚠️ Important Warning: Data Overwrite
-
-**pgcopy will TRUNCATE and OVERWRITE all data in destination database tables.** 
-
-- All existing data in target tables will be **permanently deleted**
-- Source database data will completely replace destination data
-- **This action cannot be undone**
-
-By default, pgcopy shows a confirmation dialog before proceeding. You can skip this confirmation using the `--skip-backup` flag for automated scenarios.
-
-```bash
-# Default behavior - shows confirmation dialog
-pgcopy copy --source "..." --dest "..."
-
-# Skip confirmation for automated scripts/CI
-pgcopy copy --source "..." --dest "..." --skip-backup
-```
-
-**Always ensure you have proper backups before running pgcopy on production data.**
+> Safety & Overwrite Semantics: pgcopy truncates destination tables and replaces their data. Review the short guide before running: see [Safety & Overwrite Semantics](docs/safety.md).
 
 ## When to Use pgcopy
 
@@ -39,12 +21,10 @@ pgcopy copy --source "..." --dest "..." --skip-backup
 
 ### What pgcopy is NOT
 
-- **Not for incremental sync**: pgcopy completely overwrites destination data, it doesn't merge or update existing records
-- **Not for online replication**: This is not a real-time replication solution
-- **Not Change Data Capture (CDC)**: It doesn't track or sync incremental changes
-- **Not for production replication**: Use PostgreSQL's built-in logical/physical replication for production
-- **Not a schema migration tool**: Both source and destination databases must have identical schemas
-- **Not a backup tool**: Always ensure you have proper backups before using pgcopy
+- Incremental sync or CDC (it overwrites destination data)
+- Real-time replication (use PostgreSQL replication for production)
+- Schema migration tool (schemas must already match)
+- Backup tool (have proper backups before using)
 
 ### Why Choose pgcopy Over Alternatives
 
@@ -67,33 +47,30 @@ pgcopy copy --source "..." --dest "..." --skip-backup
 - Error Recovery: Built-in error handling and constraint restoration
 - Parallel Execution: Concurrent table processing for better performance
 
-### Ideal Scenarios
+## Quick Start
 
-1. **Development Environment Data Refresh**
-   ```bash
-   # Refresh staging with production data
-   pgcopy copy --source "postgres://user:pass@prod:5432/db" --dest "postgres://user:pass@staging:5432/db"
-   ```
+```bash
+# 1) Preview
+pgcopy copy --source "postgres://user:pass@src:5432/db" --dest "postgres://user:pass@dst:5432/db" --dry-run
+# 2) Run with prompt
+pgcopy copy --source "postgres://user:pass@src:5432/db" --dest "postgres://user:pass@dst:5432/db"
+# 3) High-throughput
+pgcopy copy --source "postgres://..." --dest "postgres://..." --parallel 8 --copy-pipe --compress
+# 4) Progress UI
+# (progress UI example removed)
+# 5) Web dashboard
+pgcopy copy --source "postgres://..." --dest "postgres://..." --output web
+```
 
-2. **Database Migration Between Hosts**
-   ```bash
-   # Move database to new server (data-only)
-   pgcopy copy --source "postgres://user:pass@old-server:5432/db" --dest "postgres://user:pass@new-server:5432/db"
-   ```
+## Common Scenarios
 
-3. **Subset Data Synchronization**
-   ```bash
-   # Sync only specific tables
-   pgcopy copy --source "postgres://user:pass@prod:5432/db" --dest "postgres://user:pass@dev:5432/db" \
-     --include "public.users,public.orders,public.products"
-   ```
-
-4. **Cross-Cloud Data Transfer**
-   ```bash
-   # Transfer between cloud providers or regions
-   pgcopy copy --source "postgres://user:pass@aws-rds:5432/prod_db" \
-     --dest "postgres://user:pass@gcp-sql:5432/prod_db" --parallel 8
-   ```
+| Scenario | Command |
+|---------|---------|
+| Refresh staging from prod | `pgcopy copy --source "postgres://user:pass@prod:5432/db" --dest "postgres://user:pass@staging:5432/db"` |
+| Migrate hosts (data-only) | `pgcopy copy --source "postgres://user:pass@old:5432/db" --dest "postgres://user:pass@new:5432/db"` |
+| Copy a subset of tables | `pgcopy copy --source "..." --dest "..." --include "public.users,public.orders,public.products"` |
+| Speed up over WAN | `pgcopy copy --source "..." --dest "..." --parallel 8 --copy-pipe --compress` |
+| Web dashboard | `pgcopy copy --source "..." --dest "..." --output web` |
 
 ## Features
 
@@ -110,6 +87,16 @@ pgcopy copy --source "..." --dest "..." --skip-backup
 - In-flight Compression: Optional gzip compression of the COPY stream to reduce network I/O (`--compress`, requires `--copy-pipe`)
 
 ## Installation
+
+### Download prebuilt binaries
+
+Grab the latest release for your OS from GitHub Releases:
+
+- https://github.com/koltyakov/pgcopy/releases
+
+After download:
+- macOS/Linux: chmod +x pgcopy && move to a directory on your PATH (e.g., /usr/local/bin)
+- Windows: use pgcopy.exe or add its folder to PATH
 
 ### From Source
 
@@ -178,39 +165,11 @@ pgcopy copy \
 
 For network-bound transfers, combine `--copy-pipe` with `--compress` to significantly boost throughput (commonly multiple times faster on high-latency links).
 
-### Table Filtering with Wildcards
+### Table Filtering
 
-Both `--exclude` and `--include` support wildcard patterns for flexible table selection:
+See [Table filtering with wildcards](docs/wildcards.md) for patterns and examples.
 
-```bash
-# Exclude all temporary tables and logs
-pgcopy copy \
-  --source "postgres://user:pass@localhost:5432/sourcedb" \
-  --dest "postgres://user:pass@localhost:5433/destdb" \
-  --exclude "temp_*,*_logs,*_cache,session_*"
-
-# Include only specific patterns
-pgcopy copy \
-  --source "postgres://user:pass@localhost:5432/sourcedb" \
-  --dest "postgres://user:pass@localhost:5433/destdb" \
-  --include "user_*,order_*,product_*"
-
-# Mix exact names and patterns
-pgcopy copy \
-  --source "postgres://user:pass@localhost:5432/sourcedb" \
-  --dest "postgres://user:pass@localhost:5433/destdb" \
-  --include "users,profiles,*_settings,config_*"
-```
-
-**Supported wildcard patterns:**
-
-- `*` - Matches any sequence of characters
-- `temp_*` - Matches tables starting with "temp_"
-- `*_logs` - Matches tables ending with "_logs"
-- `*cache*` - Matches tables containing "cache"
-- `test_*_data` - Matches tables like "test_user_data", "test_order_data"
-
-### Progress Bar Mode
+### Output Modes
 
 A visual progress bar can be enabled during copy operations. By default, plain output mode is used (suitable for CI/headless environments):
 
@@ -220,20 +179,23 @@ pgcopy copy \
   --source "postgres://user:pass@localhost:5432/sourcedb" \
   --dest "postgres://user:pass@localhost:5433/destdb"
 
-# Progress bar mode
-pgcopy copy \
-  --source "postgres://user:pass@localhost:5432/sourcedb" \
-  --dest "postgres://user:pass@localhost:5433/destdb" \
-  --output progress
-
 # Interactive mode with live table progress
 pgcopy copy \
   --source "postgres://user:pass@localhost:5432/sourcedb" \
   --dest "postgres://user:pass@localhost:5433/destdb" \
   --output interactive
+
+# Web dashboard
+pgcopy copy \
+  --source "postgres://user:pass@localhost:5432/sourcedb" \
+  --dest "postgres://user:pass@localhost:5433/destdb" \
+  --output web
 ```
 
-The progress bar stays fixed at the top of the terminal while operational log messages scroll underneath, providing both progress visualization and detailed operation feedback.
+![Web UI dashboard](./assets/webui.jpg)
+<sub>Web mode launches a local dashboard for real-time monitoring.</sub>
+
+The progress bar stays fixed at the top of the terminal while operational log messages scroll underneath. In web mode, a local dashboard is launched showing real-time status.
 
 ### Streaming COPY pipeline and compression
 
@@ -287,57 +249,11 @@ pgcopy copy \
   --dry-run
 ```
 
-### Data Overwrite Confirmation
+### Safety & Overwrite Semantics
 
-By default, pgcopy shows a safety confirmation dialog before overwriting data:
+For the confirmation dialog, skip flags, recovery notes, and best practices, see [Safety & Overwrite Semantics](docs/safety.md).
 
-```bash
-# Will prompt for confirmation
-pgcopy copy \
-  --source "postgres://user:pass@localhost:5432/sourcedb" \
-  --dest "postgres://user:pass@localhost:5433/destdb"
-
-# Example confirmation dialog:
-# ⚠️  WARNING: Data Overwrite Operation
-# ═══════════════════════════════════════════════════════════════
-# This operation will OVERWRITE data in the destination database:
-# 
-# 🎯 Destination: postgres://myserver.com:5432/production
-# 📊 Tables to overwrite: 5 (with data)
-# 📈 Total rows to copy: 1,234,567
-# 
-# ⚠️  ALL EXISTING DATA in these tables will be DELETED:
-#    • public.orders (500,000 rows)
-#    • public.products (300,000 rows)
-#    • public.users (50,000 rows)
-#    • public.categories (1,200 rows)
-#    • public.settings (45 rows)
-# 
-# ═══════════════════════════════════════════════════════════════
-# This action CANNOT be undone. Are you sure you want to proceed?
-# Type 'yes' to confirm, or anything else to cancel:
-```
-
-### Skip Confirmation for Automation
-
-For scripts and CI environments, use `--skip-backup` to bypass the confirmation:
-
-```bash
-# No confirmation dialog - proceed directly
-pgcopy copy \
-  --source "postgres://user:pass@localhost:5432/sourcedb" \
-  --dest "postgres://user:pass@localhost:5433/destdb" \
-  --skip-backup
-
-# Useful for automated environments
-pgcopy copy \
-  --source "postgres://user:pass@prod:5432/db" \
-  --dest "postgres://user:pass@staging:5432/db" \
-  --skip-backup \
-  --parallel 8
-```
-
-**⚠️ Use `--skip-backup` only when you're certain about the destination and have proper backups.**
+See the automation notes in [Safety & Overwrite Semantics](docs/safety.md) for --skip-backup usage.
 
 ## Commands
 
@@ -355,7 +271,7 @@ Copy data from source to destination database.
 - `--include`: Tables to include in copying (comma-separated, supports wildcards: `user_*,*_data`)
 - `--dry-run`: Show what would be copied without actually copying
 - `--skip-backup`: Skip confirmation dialog for data overwrite (use with caution)
-- `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress)
+- `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web dashboard)
 - `--copy-pipe`: Use streaming COPY pipeline (source→dest) instead of row fetch + insert
 - `--compress`: Gzip-compress streaming COPY pipeline (requires `--copy-pipe`)
 
@@ -431,35 +347,9 @@ When copying data between PostgreSQL databases with foreign key constraints, you
 
 `pgcopy` automatically detects and handles foreign key constraints in your database, including complex scenarios with circular dependencies.
 
-### How It Works
+See [Foreign key handling](docs/foreign-keys.md) for modes, caveats, and recovery.
 
-1. Detection: Scans all tables for foreign key constraints
-2. Strategy Selection: 
-   - Preferred: Tries to use `session_replication_role = replica` (requires superuser)
-   - Fallback: Drops foreign keys temporarily if replica mode unavailable
-3. Safe Restoration: Ensures all foreign keys are restored after copy completion
-
-### Supported Scenarios
-
-- Simple Foreign Keys: Standard table-to-table references
-- Circular Dependencies: Tables that reference each other in cycles
-- Self-Referencing Tables: Tables with foreign keys to themselves
-- Complex Cascades: Handles ON DELETE/UPDATE CASCADE, RESTRICT, SET NULL, etc.
-
-### Non-Superuser Operation
-
-When running as a non-superuser (most common scenario):
-- Foreign keys are temporarily dropped before copying each table
-- Original constraint definitions are preserved
-- All constraints are recreated after successful copy
-- Failed operations still attempt to restore dropped constraints
-
-### Error Recovery
-
-If the copy operation fails:
-- A cleanup process attempts to restore all dropped foreign keys
-- Warning messages indicate any constraints that couldn't be restored
-- Manual intervention may be required if restoration fails
+More details in [Foreign key handling](docs/foreign-keys.md).
 
 ### Real-World Example
 
@@ -516,6 +406,29 @@ Starting data copy operation...
 - Streaming Pipeline: COPY-based streaming eliminates per-row overhead and minimizes round-trips
 - In-flight Compression: Gzip can greatly reduce network transfer time on bandwidth-limited links
 
+### Output feature matrix
+
+| Feature | raw (plain) | interactive | web |
+|---------|:-----------:|:-----------:|:---:|
+| Minimal logs | ✓ | ✓ | ✓ |
+| Overall progress bar |  | ✓ | ✓ |
+| Per-table live status |  | ✓ | ✓ |
+| Real-time dashboard |  |  | ✓ |
+| Auto-open UI |  |  | ✓ |
+| Good for CI | ✓ |  |  |
+
+## Advanced docs
+
+- [Safety & Overwrite Semantics](docs/safety.md)
+- [Table filtering with wildcards](docs/wildcards.md)
+- [Foreign key handling](docs/foreign-keys.md)
+- [Internals overview](docs/internals.md)
+- [Architecture](docs/architecture.md)
+- [Performance](docs/performance.md)
+- [Build & Release](docs/build-release.md)
+- [Quality & Security](docs/quality.md)
+- [Future Enhancements](docs/future.md)
+
 ### Optimal Settings
 
 - Parallel Workers: Start with 4-8 workers, adjust based on your system resources
@@ -539,27 +452,6 @@ Memory usage scales with:
 - Number of columns in tables
 
 Monitor memory usage and adjust settings accordingly.
-
-### Real-World Performance Examples
-
-#### Example 1: E-commerce Database
-
-```
-Database: 50 tables, 10M total rows, complex FK relationships
-pg_dump/pg_restore: 45 minutes (single-threaded)
-pgcopy --parallel 8: 12 minutes (with FK handling)
-Result: 3.75x improvement + automatic FK management
-```
-
-#### Example 2: SaaS Application Data Refresh 
-
-```
-Scenario: Daily staging refresh from production
-Tables: 200+ tables, circular dependencies
-pg_dump: Failed (FK constraint errors)
-pgcopy: 8 minutes, fully automated
-Result: Actually works where pg_dump fails
-```
 
 ## Examples
 

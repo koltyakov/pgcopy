@@ -228,7 +228,7 @@ func (c *Copier) Close() {
 }
 
 // Copy performs the data copying operation
-func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy length; will shrink as layers mature
+func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored into helpers
 	// Status: preparing
 	c.state.SetStatus(state.StatusPreparing)
 	c.state.AddLog(state.LogLevelInfo, "Starting copy operation", "copier", "", nil)
@@ -255,13 +255,8 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy len
 		return fmt.Errorf("failed to plan tables: %w", err)
 	}
 
-	// Update state with planned tables (same as discovered for now)
-	for _, table := range planned {
-		c.state.AddTable(table.Schema, table.Name, table.TotalRows)
-	}
-	// Totals now computed in state
-	totalRows := c.state.Summary.TotalRows
-	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Planned %d tables with %d total rows", c.state.Summary.TotalTables, totalRows), "copier", "", nil)
+	// Add planned tables to state and compute totals
+	totalRows := c.addPlannedTablesToState(planned)
 
 	// Optional confirmation
 	if !c.config.SkipBackup && !c.config.DryRun {
@@ -272,10 +267,7 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy len
 	}
 
 	// Persistence: start log
-	if c.fileLogger != nil {
-		timestamp := time.Now().Format("2006-01-02 15:04:05")
-		c.fileLogger.Printf("%s | COPY_START | %d tables | %d total rows", timestamp, len(planned), totalRows)
-	}
+	c.startCopyLog(len(planned), totalRows)
 
 	// Dry run path
 	if c.config.DryRun {
@@ -287,65 +279,33 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy len
 	c.initializeDisplayMode(planned, totalRows)
 
 	// Foreign keys (part of discovery layer scope logically)
-	if c.fkStrategy != nil {
-		if err := c.fkStrategy.Detect(planned); err != nil {
-			return fmt.Errorf("failed to detect foreign keys: %w", err)
-		}
-	}
-	if err := c.fkManager.TryUseReplicaMode(); err != nil { // sets mode / logs
+	if err := c.setupForeignKeys(planned); err != nil {
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("foreign_key_error", fmt.Sprintf("Failed to setup foreign key handling: %v", err), "copier", true, nil)
 		return fmt.Errorf("failed to setup foreign key handling: %w", err)
 	}
 
 	// Execution
-	c.state.SetStatus(state.StatusCopying)
-	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting parallel copy with %d workers", c.config.Parallel), "copier", "", nil)
-	err = c.executor.Execute(ctx, planned)
+	err = c.runExecution(ctx, planned)
 	if err != nil {
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("copy_error", fmt.Sprintf("Copy operation failed: %v", err), "copier", true, nil)
 		if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
-			fmt.Println("Waiting for web client to acknowledge failure...")
-			if c.webServer.WaitForCompletionAck(30 * time.Second) {
-				fmt.Println("Web client acknowledged failure")
-			} else {
-				fmt.Println("Proceeding without web client acknowledgment")
-			}
+			c.waitForWebAckOnFailure()
 		}
 		// Do not stop interactive display here; allow normal finalization below.
 	}
 
 	// FK cleanup
-	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil { // still using manager for recovery
-		c.logger.Warn("Failed to recover FKs from backup file: %v", recoveryErr)
-	}
-	if c.fkStrategy != nil {
-		if cleanupErr := c.fkStrategy.Cleanup(); cleanupErr != nil {
-			c.logger.Warn("Failed to cleanup FK backup file: %v", cleanupErr)
-		}
-	}
+	c.cleanupForeignKeys()
 
 	// Completion
 	c.state.SetStatus(state.StatusCompleted)
 	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Copy operation completed successfully - %d tables, %d rows", c.state.Summary.CompletedTables, c.state.Summary.SyncedRows), "copier", "", nil)
-	if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
-		fmt.Println("Waiting for web client to acknowledge completion...")
-		if c.webServer.WaitForCompletionAck(30 * time.Second) {
-			fmt.Println("Web client acknowledged completion")
-		} else {
-			fmt.Println("Proceeding without web client acknowledgment")
-		}
-	}
+	c.waitForWebAckOnCompletion()
 
 	// Finish progress displays
-	if c.interactiveMode && c.interactiveDisplay != nil {
-		c.interactiveDisplay.Stop()
-	} else if c.getDisplayMode() == DisplayModeProgress && c.progressBar != nil {
-		_ = c.progressBar.Finish()
-		fmt.Println()
-		log.SetOutput(os.Stderr)
-	}
+	c.finishDisplays()
 
 	// Reporting: final stats
 	c.printStats()
@@ -361,6 +321,96 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // legacy len
 	c.printCollectedErrorsToStdout()
 
 	return err
+}
+
+// addPlannedTablesToState updates state with planned tables and returns total rows
+func (c *Copier) addPlannedTablesToState(planned []*TableInfo) int64 {
+	for _, table := range planned {
+		c.state.AddTable(table.Schema, table.Name, table.TotalRows)
+	}
+	totalRows := c.state.Summary.TotalRows
+	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Planned %d tables with %d total rows", c.state.Summary.TotalTables, totalRows), "copier", "", nil)
+	return totalRows
+}
+
+// startCopyLog writes COPY_START to the file logger if enabled
+func (c *Copier) startCopyLog(plannedCount int, totalRows int64) {
+	if c.fileLogger == nil {
+		return
+	}
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	c.fileLogger.Printf("%s | COPY_START | %d tables | %d total rows", timestamp, plannedCount, totalRows)
+}
+
+// setupForeignKeys detects FKs and tries to enable replica mode, returning error on failure
+func (c *Copier) setupForeignKeys(planned []*TableInfo) error {
+	if c.fkStrategy != nil {
+		if err := c.fkStrategy.Detect(planned); err != nil {
+			return fmt.Errorf("failed to detect foreign keys: %w", err)
+		}
+	}
+	if err := c.fkManager.TryUseReplicaMode(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// runExecution sets state and runs the executor
+func (c *Copier) runExecution(ctx context.Context, planned []*TableInfo) error {
+	c.state.SetStatus(state.StatusCopying)
+	c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting parallel copy with %d workers", c.config.Parallel), "copier", "", nil)
+	return c.executor.Execute(ctx, planned)
+}
+
+// cleanupForeignKeys attempts to recover and cleanup FK artifacts
+func (c *Copier) cleanupForeignKeys() {
+	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
+		c.logger.Warn("Failed to recover FKs from backup file: %v", recoveryErr)
+	}
+	if c.fkStrategy != nil {
+		if cleanupErr := c.fkStrategy.Cleanup(); cleanupErr != nil {
+			c.logger.Warn("Failed to cleanup FK backup file: %v", cleanupErr)
+		}
+	}
+}
+
+// waitForWebAckOnFailure waits for web UI acknowledgment on failure
+func (c *Copier) waitForWebAckOnFailure() {
+	if c.getDisplayMode() != DisplayModeWeb || c.webServer == nil {
+		return
+	}
+	fmt.Println("Waiting for web client to acknowledge failure...")
+	if c.webServer.WaitForCompletionAck(30 * time.Second) {
+		fmt.Println("Web client acknowledged failure")
+	} else {
+		fmt.Println("Proceeding without web client acknowledgment")
+	}
+}
+
+// waitForWebAckOnCompletion waits for web UI acknowledgment on success
+func (c *Copier) waitForWebAckOnCompletion() {
+	if c.getDisplayMode() != DisplayModeWeb || c.webServer == nil {
+		return
+	}
+	fmt.Println("Waiting for web client to acknowledge completion...")
+	if c.webServer.WaitForCompletionAck(30 * time.Second) {
+		fmt.Println("Web client acknowledged completion")
+	} else {
+		fmt.Println("Proceeding without web client acknowledgment")
+	}
+}
+
+// finishDisplays finalizes interactive/progress displays
+func (c *Copier) finishDisplays() {
+	if c.interactiveMode && c.interactiveDisplay != nil {
+		c.interactiveDisplay.Stop()
+		return
+	}
+	if c.getDisplayMode() == DisplayModeProgress && c.progressBar != nil {
+		_ = c.progressBar.Finish()
+		fmt.Println()
+		log.SetOutput(os.Stderr)
+	}
 }
 
 // getTablesToCopy returns the list of tables to copy based on configuration
@@ -863,54 +913,54 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 
 // confirmDataOverwrite shows a confirmation dialog for data overwrite operation
 func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool {
-	// Filter out tables with no rows for the warning display
-	nonEmptyTables := make([]*TableInfo, 0)
-	for _, table := range tables {
-		if table.TotalRows > 0 {
-			nonEmptyTables = append(nonEmptyTables, table)
+	nonEmptyTables := c.filterNonEmptyTables(tables)
+	if len(nonEmptyTables) == 0 {
+		return true
+	}
+	// Sort for display
+	sort.Slice(nonEmptyTables, func(i, j int) bool { return nonEmptyTables[i].TotalRows > nonEmptyTables[j].TotalRows })
+	c.printOverwriteWarning(nonEmptyTables, totalRows)
+	return c.promptYes()
+}
+
+func (c *Copier) filterNonEmptyTables(tables []*TableInfo) []*TableInfo {
+	out := make([]*TableInfo, 0, len(tables))
+	for _, t := range tables {
+		if t.TotalRows > 0 {
+			out = append(out, t)
 		}
 	}
+	return out
+}
 
-	// If all tables are empty, skip the warning entirely
-	if len(nonEmptyTables) == 0 {
-		return true // Proceed without warning for empty tables
-	}
-
-	// Sort tables by row count in descending order (largest first)
-	sort.Slice(nonEmptyTables, func(i, j int) bool {
-		return nonEmptyTables[i].TotalRows > nonEmptyTables[j].TotalRows
-	})
-
+func (c *Copier) printOverwriteWarning(nonEmptyTables []*TableInfo, totalRows int64) {
 	fmt.Printf("\n⚠️  WARNING: Data Overwrite Operation\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("This operation will OVERWRITE data in the destination database:\n\n")
-
-	// Show connection info (extract server, port, database details)
 	destConnDisplay := c.getConnectionDisplay()
 	fmt.Printf("🎯 Destination: %s\n", destConnDisplay)
 	fmt.Printf("📊 Tables to overwrite: %d (with data)\n", len(nonEmptyTables))
 	fmt.Printf("📈 Total rows to copy: %s\n", utils.FormatNumber(totalRows))
-
 	fmt.Printf("\n⚠️  ALL EXISTING DATA in these tables will be DELETED:\n")
 	for i, table := range nonEmptyTables {
-		if i >= 10 { // Show only first 10 tables to avoid overwhelming output
+		if i >= 10 {
 			fmt.Printf("   ... and %d more tables\n", len(nonEmptyTables)-10)
 			break
 		}
 		fmt.Printf("   • %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.TotalRows))
 	}
-
 	fmt.Printf("\n═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("This action CANNOT be undone. Are you sure you want to proceed?\n")
 	fmt.Printf("Type 'yes' to confirm, or anything else to cancel: ")
+}
 
+func (c *Copier) promptYes() bool {
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')
 	if err != nil {
 		fmt.Printf("\nError reading input: %v\n", err)
 		return false
 	}
-
 	response = strings.TrimSpace(strings.ToLower(response))
 	return response == "yes"
 }
