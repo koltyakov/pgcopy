@@ -12,6 +12,13 @@ import (
 	"github.com/koltyakov/pgcopy/internal/utils"
 )
 
+// Default operation timeouts
+const (
+	truncateTimeout = 30 * time.Second
+	selectTimeout   = 2 * time.Minute
+	txnTimeout      = 2 * time.Minute
+)
+
 // copyTablesParallel copies tables using parallel workers
 func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) error {
 	// Create a channel for work distribution
@@ -216,8 +223,10 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 		// retry loop to mitigate deadlocks
 		var lastErr error
 		for attempt := 0; attempt < 3; attempt++ {
-			tx, err := c.destDB.BeginTx(ctx, &sql.TxOptions{})
+			tctx, cancel := context.WithTimeout(ctx, truncateTimeout)
+			tx, err := c.destDB.BeginTx(tctx, &sql.TxOptions{})
 			if err != nil {
+				cancel()
 				return fmt.Errorf("failed to begin transaction for truncate: %w", err)
 			}
 
@@ -228,15 +237,16 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 						c.logger.Error("Failed to rollback truncate transaction: %v", err)
 					}
 				}
+				cancel()
 			}(tx)
 
-			if _, err := tx.ExecContext(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
+			if _, err := tx.ExecContext(tctx, "SET LOCAL session_replication_role = replica"); err != nil {
 				_ = tx.Rollback()
 				return fmt.Errorf("failed to set replica mode for truncate: %w", err)
 			}
 
 			query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", utils.QuoteTable(table.Schema, table.Name))
-			if _, err := tx.ExecContext(ctx, query); err != nil {
+			if _, err := tx.ExecContext(tctx, query); err != nil {
 				lastErr = err
 				_ = tx.Rollback()
 				// deadlock code 40P01
@@ -264,7 +274,9 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 		return fmt.Errorf("truncate failed for %s.\"%s\" for unknown reason", table.Schema, table.Name)
 	}
 	query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", utils.QuoteTable(table.Schema, table.Name))
-	_, err := c.destDB.ExecContext(ctx, query)
+	tctx, cancel := context.WithTimeout(ctx, truncateTimeout)
+	defer cancel()
+	_, err := c.destDB.ExecContext(tctx, query)
 	return err
 }
 
@@ -321,8 +333,10 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 
 	for {
 		// Select batch from source
-		rows, err := c.sourceDB.QueryContext(ctx, selectQuery, offset)
+		sctx, cancel := context.WithTimeout(ctx, selectTimeout)
+		rows, err := c.sourceDB.QueryContext(sctx, selectQuery, offset)
 		if err != nil {
+			cancel()
 			return fmt.Errorf("failed to select batch: %w", err)
 		}
 
@@ -330,6 +344,7 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 		if err := rows.Close(); err != nil {
 			c.logger.Error("Failed to close batch rows: %v", err)
 		}
+		cancel()
 
 		if err != nil {
 			return fmt.Errorf("failed to process batch: %w", err)
@@ -356,7 +371,9 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 
 // processBatch processes a batch of rows
 func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *sql.Stmt, table *TableInfo) (int64, error) {
-	tx, err := c.destDB.BeginTx(ctx, &sql.TxOptions{})
+	bctx, cancel := context.WithTimeout(ctx, txnTimeout)
+	defer cancel()
+	tx, err := c.destDB.BeginTx(bctx, &sql.TxOptions{})
 	if err != nil {
 		return 0, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -372,7 +389,7 @@ func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *s
 
 	// Set replica mode for this transaction if FK manager is using it
 	if c.fkManager.IsUsingReplicaMode() {
-		if _, err := tx.ExecContext(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
+		if _, err := tx.ExecContext(bctx, "SET LOCAL session_replication_role = replica"); err != nil {
 			return 0, fmt.Errorf("failed to set replica mode for transaction: %w", err)
 		}
 	}
@@ -397,7 +414,7 @@ func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *s
 			return batchSize, fmt.Errorf("failed to scan row: %w", err)
 		}
 
-		if _, err := txStmt.ExecContext(ctx, values...); err != nil {
+		if _, err := txStmt.ExecContext(bctx, values...); err != nil {
 			return batchSize, fmt.Errorf("failed to insert row: %w", err)
 		}
 

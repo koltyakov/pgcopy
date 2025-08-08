@@ -1,6 +1,7 @@
 package copier
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -16,6 +17,15 @@ import (
 )
 
 const noAction = "NO ACTION"
+
+// Timeouts for FK operations
+const (
+	fkDetectTimeout     = 2 * time.Minute
+	fkDropTimeout       = 1 * time.Minute
+	fkRestoreTimeout    = 2 * time.Minute
+	fkReplicaSetTimeout = 10 * time.Second
+	fkBackupExecTimeout = 30 * time.Second
+)
 
 // ForeignKey represents a foreign key constraint
 type ForeignKey struct {
@@ -119,7 +129,9 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 			ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule
 		ORDER BY tc.table_schema, tc.table_name, tc.constraint_name`
 
-	rows, err := fkm.db.Query(query, pq.Array(tableFilters))
+	ctx, cancel := context.WithTimeout(context.Background(), fkDetectTimeout)
+	defer cancel()
+	rows, err := fkm.db.QueryContext(ctx, query, pq.Array(tableFilters))
 	if err != nil {
 		return fmt.Errorf("failed to query foreign keys: %w", err)
 	}
@@ -199,7 +211,9 @@ func (fkm *ForeignKeyManager) buildConstraintDefinition(fk *ForeignKey) string {
 
 // TryUseReplicaMode attempts to use replica mode for FK handling
 func (fkm *ForeignKeyManager) TryUseReplicaMode() error {
-	_, err := fkm.db.Exec("SET session_replication_role = replica")
+	ctx, cancel := context.WithTimeout(context.Background(), fkReplicaSetTimeout)
+	defer cancel()
+	_, err := fkm.db.ExecContext(ctx, "SET session_replication_role = replica")
 	if err != nil {
 		fkm.logger.Warn("Cannot use replica mode (requires superuser), will drop/recreate FKs: %v", err)
 		fkm.logger.Info("FK definitions will be backed up to: %s", fkm.backupFile)
@@ -218,7 +232,9 @@ func (fkm *ForeignKeyManager) DisableReplicaMode() error {
 		return nil
 	}
 
-	_, err := fkm.db.Exec("SET session_replication_role = default")
+	ctx, cancel := context.WithTimeout(context.Background(), fkReplicaSetTimeout)
+	defer cancel()
+	_, err := fkm.db.ExecContext(ctx, "SET session_replication_role = default")
 	if err != nil {
 		fkm.logger.Warn("Failed to restore session_replication_role: %v", err)
 	}
@@ -341,7 +357,9 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 		maxRetries := 3
 		var lastErr error
 		for attempt := 1; attempt <= maxRetries; attempt++ {
-			_, err := fkm.db.Exec(fk.Definition)
+			ctx, cancel := context.WithTimeout(context.Background(), fkRestoreTimeout)
+			_, err := fkm.db.ExecContext(ctx, fk.Definition)
+			cancel()
 			if err == nil {
 				// Success
 				restored++
@@ -491,7 +509,9 @@ func (fkm *ForeignKeyManager) getExistingFKSignature(schema, table, constraint s
 		  AND tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_name = $3
 		GROUP BY ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule`
 
-	row := fkm.db.QueryRow(query, schema, table, constraint)
+	ctx, cancel := context.WithTimeout(context.Background(), fkDetectTimeout)
+	defer cancel()
+	row := fkm.db.QueryRowContext(ctx, query, schema, table, constraint)
 	var cols, refSchema, refTable, refCols, del, upd string
 	if err := row.Scan(&cols, &refSchema, &refTable, &refCols, &del, &upd); err != nil {
 		if err == sql.ErrNoRows {
@@ -543,7 +563,9 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 
 	// Release lock temporarily for database operation
 	fkm.mu.Unlock()
-	_, err := fkm.db.Exec(query)
+	ctx, cancel := context.WithTimeout(context.Background(), fkDropTimeout)
+	_, err := fkm.db.ExecContext(ctx, query)
+	cancel()
 	fkm.mu.Lock()
 
 	if err != nil {
@@ -727,7 +749,9 @@ func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
 			// Remove trailing semicolon
 			statement := strings.TrimSuffix(line, ";")
 
-			_, err := fkm.db.Exec(statement)
+			ctx, cancel := context.WithTimeout(context.Background(), fkBackupExecTimeout)
+			_, err := fkm.db.ExecContext(ctx, statement)
+			cancel()
 			if err != nil {
 				// Ignore "already exists" errors, but log others
 				if !strings.Contains(err.Error(), "already exists") {
