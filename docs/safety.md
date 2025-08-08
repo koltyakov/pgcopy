@@ -19,7 +19,7 @@ pgcopy copy \
   --skip-backup
 ```
 
-Use --skip-backup only when you’ve validated the destination and have good backups.
+Use `--skip-backup` only when you’ve validated the destination and have good backups.
 
 ## Recommended safe workflow
 

@@ -320,6 +320,17 @@
       text-transform: uppercase;
       letter-spacing: 0.05em;
     }
+
+    th.sortable {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .sort-indicator {
+      margin-left: 6px;
+      color: var(--gray-500);
+      font-size: 0.7rem;
+    }
     
     .table-row {
       transition: all 0.2s ease;
@@ -334,6 +345,8 @@
       align-items: center;
       gap: 0.5rem;
     }
+
+  /* Duration column uses default table cell styling */
     
     .status-icon-pending { color: var(--warning-color); }
     .status-icon-copying { color: var(--primary-color); }
@@ -490,16 +503,12 @@
             <span class="stat-value data-stat" id="dataTransferred">0 rows</span>
           </div>
           <div class="stat-item">
-            <span class="stat-label">Failed Tables:</span>
-            <span class="stat-value error-stat" id="failedTables">0</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label">Overall ETA:</span>
-            <span class="stat-value time-stat" id="overallETA">--</span>
-          </div>
-          <div class="stat-item">
             <span class="stat-label">Elapsed Time:</span>
             <span class="stat-value time-stat" id="elapsedTime">00:00:00</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">Failed Tables:</span>
+            <span class="stat-value error-stat" id="failedTables">0</span>
           </div>
         </div>
       </div>
@@ -527,12 +536,12 @@
           <table id="tablesTable">
             <thead>
               <tr>
-                <th>Status</th>
-                <th>Table</th>
+                <th class="sortable" data-sort="status">Status <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="table">Table <span class="sort-indicator"></span></th>
                 <th>Progress</th>
-                <th>Records</th>
-                <th>Speed</th>
-                <th>ETA</th>
+                <th class="sortable" data-sort="duration">Duration <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="records">Records <span class="sort-indicator"></span></th>
+                <th class="sortable" data-sort="speed">Speed <span class="sort-indicator"></span></th>
               </tr>
             </thead>
             <tbody></tbody>
@@ -555,6 +564,8 @@
         this.currentSearch = '';
         this.elapsedTimerInterval = null;
         this.isCompleted = false;
+  this.sortKey = 'table';
+  this.sortDir = 'asc'; // 'asc' or 'desc'
         this.connect();
         this.setupEventListeners();
         this.startElapsedTimer();
@@ -600,6 +611,7 @@
       setupEventListeners() {
         const statusFilter = document.getElementById('statusFilter');
         const searchInput = document.getElementById('searchInput');
+        const table = document.getElementById('tablesTable');
         
         if (statusFilter) {
           statusFilter.addEventListener('change', (e) => {
@@ -614,6 +626,26 @@
             this.updateTablesDisplay();
           });
         }
+
+        if (table) {
+          const headers = table.querySelectorAll('th.sortable');
+          headers.forEach((th) => {
+            th.addEventListener('click', () => {
+              const key = th.getAttribute('data-sort');
+              if (key) {
+                if (this.sortKey === key) {
+                  this.sortDir = this.sortDir === 'asc' ? 'desc' : 'asc';
+                } else {
+                  this.sortKey = key;
+                  this.sortDir = 'asc';
+                }
+                this.updateSortIndicators();
+                this.updateTablesDisplay();
+              }
+            });
+          });
+          this.updateSortIndicators();
+        }
       }
 
       startElapsedTimer() {
@@ -624,6 +656,8 @@
             if (elapsedTimeElement) {
               elapsedTimeElement.textContent = this.formatDuration(elapsed);
             }
+            // Refresh table to update in-flight durations on copying rows
+            this.updateTablesDisplay();
           }
         }, 1000);
       }
@@ -815,14 +849,75 @@
         if (!this.state || !this.state.tables) return;
         
         const filteredTables = this.filterTables(this.state.tables);
+        const sortedTables = this.sortTables(filteredTables);
         const tbody = document.querySelector('#tablesTable tbody');
         if (!tbody) return;
         
         tbody.innerHTML = '';
         
-        filteredTables.forEach(table => {
+        sortedTables.forEach(table => {
           const row = this.createTableRow(table);
           tbody.appendChild(row);
+        });
+      }
+
+      updateSortIndicators() {
+        const table = document.getElementById('tablesTable');
+        if (!table) return;
+        const headers = table.querySelectorAll('th.sortable');
+        headers.forEach((th) => {
+          const key = th.getAttribute('data-sort');
+          const indicator = th.querySelector('.sort-indicator');
+          if (!indicator) return;
+          if (key === this.sortKey) {
+            indicator.textContent = this.sortDir === 'asc' ? '▲' : '▼';
+          } else {
+            indicator.textContent = '';
+          }
+        });
+      }
+
+      sortTables(tables) {
+        const dir = this.sortDir === 'asc' ? 1 : -1;
+        const statusOrder = { pending: 1, copying: 2, completed: 3, failed: 4 };
+        const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+  return [...tables].sort((a, b) => {
+          let cmp = 0;
+          switch (this.sortKey) {
+            case 'table': {
+              const an = (a.fullName || a.name || '').toLowerCase();
+              const bn = (b.fullName || b.name || '').toLowerCase();
+              cmp = collator.compare(an, bn);
+              break;
+            }
+            case 'status': {
+              const av = statusOrder[a.status] || 99;
+              const bv = statusOrder[b.status] || 99;
+              cmp = av === bv ? 0 : (av < bv ? -1 : 1);
+              break;
+            }
+            case 'records': {
+              const av = a.totalRows || 0;
+              const bv = b.totalRows || 0;
+              cmp = av === bv ? 0 : (av < bv ? -1 : 1);
+              break;
+            }
+            case 'speed': {
+              const av = a.speed || 0;
+              const bv = b.speed || 0;
+              cmp = av === bv ? 0 : (av < bv ? -1 : 1);
+              break;
+            }
+            case 'duration': {
+              const av = this.getTableDurationMs(a);
+              const bv = this.getTableDurationMs(b);
+              cmp = av === bv ? 0 : (av < bv ? -1 : 1);
+              break;
+            }
+            default:
+              cmp = 0;
+          }
+          return cmp * dir;
         });
       }
 
@@ -843,6 +938,7 @@
         const statusIcon = this.getStatusIcon(table.status);
         const progress = this.calculateProgress(table);
         const progressBar = this.createProgressBar(progress, table.status);
+  const duration = this.getTableDuration(table);
         
         row.innerHTML = 
           '<td class="status-cell">' +
@@ -851,11 +947,68 @@
           '</td>' +
           '<td class="table-name">' + (table.fullName || table.name) + '</td>' +
           '<td class="progress-cell">' + progressBar + '</td>' +
+          '<td class="duration-cell">' + (duration || '--') + '</td>' +
           '<td class="records-cell">' + this.formatNumber(table.totalRows || 0) + '</td>' +
-          '<td class="speed-cell">' + this.formatSpeed(table.speed || 0) + '</td>' +
-          '<td class="eta-cell">' + this.formatETA(table.eta) + '</td>';
+          '<td class="speed-cell">' + this.formatSpeed(table.speed || 0) + '</td>';
         
         return row;
+      }
+
+      getTableDuration(table) {
+        try {
+          // Show duration for copying (elapsed) and completed (final duration)
+          if (!table) return '';
+          // For zero-row tables, always show 00:00:00
+          if (table.totalRows === 0) return this.formatDuration(0);
+          const status = table.status;
+          const hasStart = !!table.startTime;
+          if (!hasStart) return '';
+          const startMs = new Date(table.startTime).getTime();
+          if (!isFinite(startMs)) return '';
+          if (status === 'copying') {
+            const now = Date.now();
+            if (now > startMs) return this.formatDuration(now - startMs);
+            return '';
+          }
+          if (status === 'completed' || status === 'failed' || status === 'skipped') {
+            if (typeof table.duration === 'number' && table.duration > 0) {
+              return this.formatDuration(table.duration);
+            }
+            if (table.endTime) {
+              const endMs = new Date(table.endTime).getTime();
+              if (isFinite(endMs) && endMs > startMs) {
+                return this.formatDuration(endMs - startMs);
+              }
+            }
+          }
+          return '';
+        } catch (_) {
+          return '';
+        }
+      }
+
+      getTableDurationMs(table) {
+        try {
+          if (!table || !table.startTime) return 0;
+          // For zero-row tables, duration is zero ms
+          if (table.totalRows === 0) return 0;
+          const startMs = new Date(table.startTime).getTime();
+          if (!isFinite(startMs)) return 0;
+          const status = table.status;
+          if (status === 'copying') {
+            return Math.max(0, Date.now() - startMs);
+          }
+          if (typeof table.duration === 'number' && table.duration > 0) {
+            return table.duration;
+          }
+          if (table.endTime) {
+            const endMs = new Date(table.endTime).getTime();
+            if (isFinite(endMs) && endMs > startMs) return endMs - startMs;
+          }
+          return 0;
+        } catch (_) {
+          return 0;
+        }
       }
 
       getStatusIcon(status) {
