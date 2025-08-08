@@ -9,9 +9,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/koltyakov/pgcopy/internal/utils"
 )
+
+const noAction = "NO ACTION"
 
 // ForeignKey represents a foreign key constraint
 type ForeignKey struct {
@@ -184,10 +187,10 @@ func (fkm *ForeignKeyManager) buildConstraintDefinition(fk *ForeignKey) string {
 	}
 	builder.WriteString(")")
 
-	if fk.OnDelete != "NO ACTION" {
+	if fk.OnDelete != noAction {
 		builder.WriteString(fmt.Sprintf(" ON DELETE %s", fk.OnDelete))
 	}
-	if fk.OnUpdate != "NO ACTION" {
+	if fk.OnUpdate != noAction {
 		builder.WriteString(fmt.Sprintf(" ON UPDATE %s", fk.OnUpdate))
 	}
 
@@ -334,30 +337,54 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 
 		fkm.logger.Info("Restoring FK constraint %s on %s", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table))
 
-		_, err := fkm.db.Exec(fk.Definition)
-		if err != nil {
-			// If it already exists, check if it matches and treat as restored if so
-			if strings.Contains(strings.ToLower(err.Error()), "already exists") {
-				if exists {
-					if existsSig == expectedSig {
-						fkm.logger.Info("FK %s already exists and matches; marking as restored", utils.HighlightFKName(fk.ConstraintName))
-						restored++
-						fkm.mu.Lock()
-						delete(fkm.processedConstraints, constraintKey)
-						fkm.mu.Unlock()
-						continue
-					}
+		// Retry with exponential backoff on transient failures
+		maxRetries := 3
+		var lastErr error
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			_, err := fkm.db.Exec(fk.Definition)
+			if err == nil {
+				// Success
+				restored++
+				fkm.mu.Lock()
+				delete(fkm.processedConstraints, constraintKey)
+				fkm.mu.Unlock()
+				lastErr = nil
+				break
+			}
+
+			lower := strings.ToLower(err.Error())
+			// If already exists, check if it matches and treat as restored if so
+			if strings.Contains(lower, "already exists") {
+				// Re-check current signature to be certain
+				exSig2, ex2, _ := fkm.getExistingFKSignature(fk.Schema, fk.Table, fk.ConstraintName)
+				if ex2 && exSig2 == expectedSig {
+					fkm.logger.Info("FK %s already exists and matches; marking as restored", utils.HighlightFKName(fk.ConstraintName))
+					restored++
+					fkm.mu.Lock()
+					delete(fkm.processedConstraints, constraintKey)
+					fkm.mu.Unlock()
+					lastErr = nil
+					break
 				}
 			}
-			fkm.logger.Warn("Failed to restore FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), err)
+
+			lastErr = err
+			// Retry only if error seems transient
+			if attempt < maxRetries && fkm.shouldRetryFKError(err) {
+				delay := fkm.retryDelay(attempt)
+				fkm.logger.Warn("Restore FK %s failed (attempt %d/%d): %v. Retrying in %s...",
+					utils.HighlightFKName(fk.ConstraintName), attempt, maxRetries, err, delay)
+				time.Sleep(delay)
+				continue
+			}
+			// No retry or out of attempts
+			break
+		}
+
+		if lastErr != nil {
+			fkm.logger.Warn("Failed to restore FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), lastErr)
 			// Keep it in the dropped list for later retry
 			remaining = append(remaining, fk)
-		} else {
-			restored++
-			// Mark as restored (remove from processed constraints)
-			fkm.mu.Lock()
-			delete(fkm.processedConstraints, constraintKey)
-			fkm.mu.Unlock()
 		}
 	}
 
@@ -379,17 +406,51 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 	return nil
 }
 
+// shouldRetryFKError returns true for errors that are likely transient.
+func (fkm *ForeignKeyManager) shouldRetryFKError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(s, "deadlock detected"),
+		strings.Contains(s, "lock not available"),
+		strings.Contains(s, "could not obtain lock"),
+		strings.Contains(s, "timeout"),
+		strings.Contains(s, "canceling statement due to"),
+		strings.Contains(s, "connection reset"),
+		strings.Contains(s, "connection refused"),
+		strings.Contains(s, "server closed the connection"),
+		strings.Contains(s, "terminating connection due to administrator command"),
+		strings.Contains(s, "serialization failure"),
+		strings.Contains(s, "too many connections"):
+		return true
+	default:
+		return false
+	}
+}
+
+// retryDelay computes an exponential backoff delay with a cap.
+func (fkm *ForeignKeyManager) retryDelay(attempt int) time.Duration {
+	base := 200 * time.Millisecond
+	d := base << (attempt - 1) // 200ms, 400ms, 800ms
+	if d > 2*time.Second {
+		d = 2 * time.Second
+	}
+	return d
+}
+
 // computeFKSignature creates a deterministic signature string for an FK definition.
 // It is suitable for hashing or direct equality comparison.
 func (fkm *ForeignKeyManager) computeFKSignature(fk *ForeignKey) string {
 	// Normalize case for actions and join lists with commas
 	onDelete := strings.ToUpper(strings.TrimSpace(fk.OnDelete))
 	if onDelete == "" {
-		onDelete = "NO ACTION"
+		onDelete = noAction
 	}
 	onUpdate := strings.ToUpper(strings.TrimSpace(fk.OnUpdate))
 	if onUpdate == "" {
-		onUpdate = "NO ACTION"
+		onUpdate = noAction
 	}
 
 	cols := strings.Join(fk.Columns, ",")
