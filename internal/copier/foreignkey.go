@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/pgcopy/internal/utils"
+	"github.com/lib/pq"
 )
 
 const noAction = "NO ACTION"
@@ -81,17 +82,16 @@ func (fkm *ForeignKeyManager) SetLogger(logger *utils.SimpleLogger) {
 func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 	fkm.logger.Info("Detecting foreign key constraints...")
 
-	// Build table filter for IN clause
+	// Build table filter values and parameterize with ANY($1) to avoid SQL concatenation
 	tableFilters := make([]string, 0, len(tables))
 	for _, table := range tables {
-		tableFilters = append(tableFilters, fmt.Sprintf("'%s.%s'", table.Schema, table.Name))
+		tableFilters = append(tableFilters, fmt.Sprintf("%s.%s", table.Schema, table.Name))
 	}
 
 	if len(tableFilters) == 0 {
 		return nil
 	}
 
-	// #nosec G202 - SQL concatenation is safe here as tableFilters contains sanitized schema.table names from database
 	query := `
 		SELECT 
 			tc.constraint_name,
@@ -114,12 +114,12 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 			ON tc.constraint_name = rc.constraint_name 
 			AND tc.table_schema = rc.constraint_schema
 		WHERE tc.constraint_type = 'FOREIGN KEY'
-			AND (tc.table_schema || '.' || tc.table_name) IN (` + strings.Join(tableFilters, ",") + `)
+			AND (tc.table_schema || '.' || tc.table_name) = ANY($1)
 		GROUP BY tc.constraint_name, tc.table_schema, tc.table_name, 
 			ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule
 		ORDER BY tc.table_schema, tc.table_name, tc.constraint_name`
 
-	rows, err := fkm.db.Query(query)
+	rows, err := fkm.db.Query(query, pq.Array(tableFilters))
 	if err != nil {
 		return fmt.Errorf("failed to query foreign keys: %w", err)
 	}

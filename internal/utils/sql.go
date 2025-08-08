@@ -1,4 +1,4 @@
-package utils
+package utils // nolint:revive // utils is an acceptable name for internal utility package
 
 import "strings"
 

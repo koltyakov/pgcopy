@@ -34,3 +34,44 @@ func MatchesAnyPattern(text string, patterns []string) bool {
 	}
 	return false
 }
+
+// MatchesTablePattern checks if a pattern matches either the simple table name
+// or the fully-qualified name schema.table. Patterns support * wildcards.
+// Examples:
+//
+//	users          -> matches table name "users"
+//	public.users   -> matches full name "public.users"
+//	public.*       -> matches any table in schema public
+//	*.users        -> matches table "users" in any schema
+func MatchesTablePattern(schema, table, pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" {
+		return false
+	}
+	name := table
+	full := schema + "." + table
+
+	// Exact match first
+	if pattern == name || pattern == full {
+		return true
+	}
+
+	// Wildcard matches
+	if ok, _ := filepath.Match(pattern, name); ok {
+		return true
+	}
+	if ok, _ := filepath.Match(pattern, full); ok {
+		return true
+	}
+	return false
+}
+
+// MatchesAnyTablePattern returns true if any pattern matches either table or schema.table.
+func MatchesAnyTablePattern(schema, table string, patterns []string) bool {
+	for _, p := range patterns {
+		if MatchesTablePattern(schema, table, p) {
+			return true
+		}
+	}
+	return false
+}

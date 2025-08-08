@@ -71,3 +71,50 @@ func TestMatchesAnyPattern(t *testing.T) {
 		})
 	}
 }
+
+func TestMatchesTablePattern(t *testing.T) {
+	tests := []struct {
+		schema   string
+		table    string
+		pattern  string
+		expected bool
+	}{
+		{"public", "users", "users", true},
+		{"public", "users", "public.users", true},
+		{"auth", "sessions", "public.users", false},
+		{"auth", "sessions", "auth.*", true},
+		{"auth", "sessions", "*.sessions", true},
+		{"auth", "sessions", "*.*", true},
+		{"sales", "order_items", "order_*", true},
+		{"sales", "order_items", "sales.order_*", true},
+		{"sales", "order_items", "prod.*", false},
+		{"sales", "order_items", "*.users", false},
+		{"sales", "order_items", "", false},
+	}
+
+	for _, tt := range tests {
+		if got := MatchesTablePattern(tt.schema, tt.table, tt.pattern); got != tt.expected {
+			t.Errorf("MatchesTablePattern(%q,%q,%q) = %v, want %v", tt.schema, tt.table, tt.pattern, got, tt.expected)
+		}
+	}
+}
+
+func TestMatchesAnyTablePattern(t *testing.T) {
+	tests := []struct {
+		schema   string
+		table    string
+		patterns []string
+		expected bool
+	}{
+		{"public", "users", []string{"orders", "public.users"}, true},
+		{"public", "users", []string{"orders", "auth.*"}, false},
+		{"auth", "sessions", []string{"*.sessions", "public.*"}, true},
+		{"sales", "order_items", []string{"inventory.*", "prod.*"}, false},
+	}
+
+	for _, tt := range tests {
+		if got := MatchesAnyTablePattern(tt.schema, tt.table, tt.patterns); got != tt.expected {
+			t.Errorf("MatchesAnyTablePattern(%q,%q,%v) = %v, want %v", tt.schema, tt.table, tt.patterns, got, tt.expected)
+		}
+	}
+}
