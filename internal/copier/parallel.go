@@ -237,7 +237,7 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 				return fmt.Errorf("failed to set replica mode for truncate: %w", err)
 			}
 
-			query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
+			query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", utils.QuoteTable(table.Schema, table.Name))
 			if _, err := tx.ExecContext(ctx, query); err != nil {
 				lastErr = err
 				_ = tx.Rollback()
@@ -265,7 +265,7 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 		}
 		return fmt.Errorf("truncate failed for %s.\"%s\" for unknown reason", table.Schema, table.Name)
 	}
-	query := fmt.Sprintf("TRUNCATE TABLE %s.\"%s\" CASCADE", table.Schema, table.Name)
+	query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", utils.QuoteTable(table.Schema, table.Name))
 	_, err := c.destDB.ExecContext(ctx, query)
 	return err
 }
@@ -286,9 +286,9 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 	placeholderList := strings.Join(placeholders, ", ")
 
 	// Prepare insert statement for destination
-	insertQuery := fmt.Sprintf( // #nosec G201 - schema and table names from trusted database query
-		"INSERT INTO %s.\"%s\" (%s) VALUES (%s)",
-		table.Schema, table.Name, columnList, placeholderList,
+	insertQuery := fmt.Sprintf( // #nosec G201 - identifiers are quoted safely
+		"INSERT INTO %s (%s) VALUES (%s)",
+		utils.QuoteTable(table.Schema, table.Name), columnList, placeholderList,
 	)
 
 	insertStmt, err := c.destDB.PrepareContext(ctx, insertQuery)
@@ -305,16 +305,16 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 	var selectQuery string
 	if len(table.PKColumns) > 0 {
 		// Use primary key for ordering if available
-		orderBy := strings.Join(table.PKColumns, ", ")
+		orderBy := utils.QuoteJoinIdents(table.PKColumns)
 		selectQuery = fmt.Sprintf(
-			"SELECT %s FROM %s.\"%s\" ORDER BY \"%s\" LIMIT %d OFFSET $1",
-			columnList, table.Schema, table.Name, orderBy, c.config.BatchSize,
+			"SELECT %s FROM %s ORDER BY %s LIMIT %d OFFSET $1",
+			columnList, utils.QuoteTable(table.Schema, table.Name), orderBy, c.config.BatchSize,
 		)
 	} else {
 		// Use ctid for ordering if no primary key (less efficient but works)
 		selectQuery = fmt.Sprintf(
-			"SELECT %s FROM %s.\"%s\" ORDER BY ctid LIMIT %d OFFSET $1",
-			columnList, table.Schema, table.Name, c.config.BatchSize,
+			"SELECT %s FROM %s ORDER BY ctid LIMIT %d OFFSET $1",
+			columnList, utils.QuoteTable(table.Schema, table.Name), c.config.BatchSize,
 		)
 	}
 

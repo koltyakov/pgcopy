@@ -166,24 +166,24 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 func (fkm *ForeignKeyManager) buildConstraintDefinition(fk *ForeignKey) string {
 	var builder strings.Builder
 
-	builder.WriteString(fmt.Sprintf("ALTER TABLE \"%s\".\"%s\" ADD CONSTRAINT \"%s\" ",
-		fk.Schema, fk.Table, fk.ConstraintName))
+	builder.WriteString(fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s ",
+		utils.QuoteTable(fk.Schema, fk.Table), utils.QuoteIdent(fk.ConstraintName)))
 
 	builder.WriteString("FOREIGN KEY (")
 	for i, col := range fk.Columns {
 		if i > 0 {
 			builder.WriteString(", ")
 		}
-		builder.WriteString(fmt.Sprintf("\"%s\"", col))
+		builder.WriteString(utils.QuoteIdent(col))
 	}
 	builder.WriteString(") REFERENCES ")
 
-	builder.WriteString(fmt.Sprintf("\"%s\".\"%s\" (", fk.ReferencedSchema, fk.ReferencedTable))
+	builder.WriteString(fmt.Sprintf("%s (", utils.QuoteTable(fk.ReferencedSchema, fk.ReferencedTable)))
 	for i, col := range fk.ReferencedColumns {
 		if i > 0 {
 			builder.WriteString(", ")
 		}
-		builder.WriteString(fmt.Sprintf("\"%s\"", col))
+		builder.WriteString(utils.QuoteIdent(col))
 	}
 	builder.WriteString(")")
 
@@ -536,8 +536,8 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 		}
 	}
 
-	query := fmt.Sprintf("ALTER TABLE \"%s\".\"%s\" DROP CONSTRAINT IF EXISTS \"%s\"",
-		fk.Schema, fk.Table, fk.ConstraintName)
+	query := fmt.Sprintf("ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s",
+		utils.QuoteTable(fk.Schema, fk.Table), utils.QuoteIdent(fk.ConstraintName))
 
 	fkm.logger.Info("Dropping FK constraint %s on %s", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table))
 

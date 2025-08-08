@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/koltyakov/pgcopy/internal/utils"
 )
 
 // resetSequencesForTable detects columns backed by sequences and adjusts the sequence's last value
@@ -74,8 +76,8 @@ JOIN pg_sequences ps
 	// For each sequence-backed column, compute MAX(column) on the destination and set sequence
 	for _, s := range seqs {
 		// Compute max value for the column
-		maxQuery := fmt.Sprintf( // #nosec G201 - identifiers originate from system catalogs and are safely double-quoted
-			`SELECT MAX("%s") FROM %s."%s"`, s.columnName, table.Schema, table.Name)
+		maxQuery := fmt.Sprintf( // #nosec G201 - identifiers originate from system catalogs and are quoted via helpers
+			`SELECT MAX(%s) FROM %s`, utils.QuoteIdent(s.columnName), utils.QuoteTable(table.Schema, table.Name))
 		var maxVal sql.NullInt64
 		if err := c.destDB.QueryRowContext(ctx, maxQuery).Scan(&maxVal); err != nil {
 			return fmt.Errorf("failed to compute MAX(%s) for %s.%s: %w", s.columnName, table.Schema, table.Name, err)

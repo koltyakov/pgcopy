@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -43,9 +42,10 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	}
 
 	cols := table.Columns
-	columnList := quoteJoin(cols)
-	copyOutSQL := fmt.Sprintf("COPY \"%s\".\"%s\" (%s) TO STDOUT (FORMAT binary)", table.Schema, table.Name, columnList)
-	copyInSQL := fmt.Sprintf("COPY \"%s\".\"%s\" (%s) FROM STDIN (FORMAT binary)", table.Schema, table.Name, columnList)
+	columnList := utils.QuoteJoinIdents(cols)
+	qt := utils.QuoteTable(table.Schema, table.Name)
+	copyOutSQL := fmt.Sprintf("COPY %s (%s) TO STDOUT (FORMAT binary)", qt, columnList)
+	copyInSQL := fmt.Sprintf("COPY %s (%s) FROM STDIN (FORMAT binary)", qt, columnList)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -105,10 +105,4 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 }
 
 // quoteJoin joins identifiers with quoting.
-func quoteJoin(cols []string) string {
-	res := make([]string, len(cols))
-	for i, c := range cols {
-		res[i] = fmt.Sprintf("\"%s\"", c)
-	}
-	return strings.Join(res, ", ")
-}
+// moved to utils.QuoteJoinIdents
