@@ -3,11 +3,13 @@
 pgcopy is a destructive data synchronization tool for PostgreSQL databases with identical schemas. It will truncate destination tables and replace their contents with data from the source database.
 
 ## What happens during a copy
+
 - Destination tables are truncated before data is written
 - Data from source replaces all destination data
 - The operation cannot be undone without a backup
 
 ## Confirmation & automation
+
 By default, pgcopy shows a confirmation prompt with a summary of affected tables and row counts. For automation/CI, you can skip the prompt:
 
 ```bash
@@ -20,12 +22,14 @@ pgcopy copy \
 Use --skip-backup only when you’ve validated the destination and have good backups.
 
 ## Recommended safe workflow
-1) Start with --dry-run to preview tables and row counts
-2) Run without --skip-backup and review the confirmation dialog
+
+1) Start with `--dry-run` to preview tables and row counts
+2) Run without `--skip-backup` and review the confirmation dialog
 3) Use named includes/excludes to avoid accidental table selection
 4) For automation, pin exact connection strings and table lists
 
 ## Failure & recovery
+
 - If the copy fails mid-run, pgcopy attempts to restore foreign keys it disabled/dropped during the run
 - You may need to intervene manually if the environment changed while copying
 - Always keep recent backups for critical environments

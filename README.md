@@ -1,6 +1,6 @@
 # pgcopy
 
-**pgcopy** is a high-performance CLI tool for efficiently copying data between PostgreSQL databases with identical schemas. It's designed for data-only migrations and provides parallel processing capabilities for optimal performance.
+**pgcopy** is a CLI tool for copying data between PostgreSQL databases with identical schemas. It's built for data-only migrations and supports parallel processing.
 
 ![pgcopy in action](./assets/pgcopy.gif)
 
@@ -26,26 +26,6 @@
 - Schema migration tool (schemas must already match)
 - Backup tool (have proper backups before using)
 
-### Why Choose pgcopy Over Alternatives
-
-#### vs. pg_dump/pg_restore
-
-- Performance: Parallel processing often outperforms serial dump/restore operations
-- Foreign Key Handling: Automatically manages complex FK constraints without manual intervention
-- Flexibility: Table-level filtering capabilities
-- Progress Tracking: Real-time progress monitoring with detailed logging
-
-#### vs. ETL Tools
-
-- Simplicity: No complex configuration or learning curve
-- PostgreSQL-Optimized: Built specifically for PostgreSQL-to-PostgreSQL transfers
-- Constraint-Aware: Understands and preserves PostgreSQL foreign key relationships
-
-#### vs. Manual SQL Scripts
-
-- Automated FK Management: No need to manually drop/recreate constraints
-- Error Recovery: Built-in error handling and constraint restoration
-- Parallel Execution: Concurrent table processing for better performance
 
 ## Quick Start
 
@@ -76,14 +56,14 @@ pgcopy copy --source "postgres://..." --dest "postgres://..." --output web
 
 - High Performance: Parallel table copying with configurable workers
 - Batch Processing: Configurable batch sizes for optimal memory usage
-- Progress Tracking: Real-time progress monitoring with visual progress bar enabled by default (stays fixed at top while logs scroll below)
+- Progress Tracking: Live progress monitoring with a visual progress bar enabled by default (stays fixed at top while logs scroll below)
 - Flexible Configuration: Support for connection strings, config files, and command-line options
 - Table Filtering: Include/exclude specific tables from the copy operation
 - Data Safety: Comprehensive validation and confirmation dialogs
 - Dry Run Mode: Preview what will be copied without actually copying data
 - Transaction Safety: Uses transactions to ensure data consistency
 - Advanced Foreign Key Handling: Automatically detects and manages foreign key constraints, including circular dependencies
-- Streaming COPY Pipeline: Direct source→destination streaming via PostgreSQL COPY for maximum throughput (`--copy-pipe`)
+- Streaming COPY Pipeline: Direct source→destination streaming via PostgreSQL COPY for higher throughput (`--copy-pipe`)
 - In-flight Compression: Optional gzip compression of the COPY stream to reduce network I/O (`--compress`, requires `--copy-pipe`)
 
 ## Installation
@@ -95,8 +75,8 @@ Grab the latest release for your OS from GitHub Releases:
 - https://github.com/koltyakov/pgcopy/releases
 
 After download:
-- macOS/Linux: chmod +x pgcopy && move to a directory on your PATH (e.g., /usr/local/bin)
-- Windows: use pgcopy.exe or add its folder to PATH
+- macOS/Linux: `chmod +x pgcopy` && move to a directory on your PATH (e.g., `/usr/local/bin`)
+- Windows: use `pgcopy.exe` or add its folder to PATH
 
 ### From Source
 
@@ -118,14 +98,7 @@ This will install `pgcopy` to `/usr/local/bin/`.
 
 ## Usage
 
-### ⚠️ Data Safety First
-
-Before using pgcopy, understand that it will **completely overwrite** data in the destination database:
-
-1. **Backup your destination database** before running pgcopy
-2. **Verify your connection strings** - double-check source and destination
-3. **Use --dry-run first** to preview what will be copied
-4. **Test with non-production data** before running on production systems
+See [Safety & Overwrite Semantics](docs/safety.md) for pre-flight checks and automation guidance.
 
 ### Basic Usage
 
@@ -163,7 +136,7 @@ pgcopy copy \
   --include "users,orders,products"
 ```
 
-For network-bound transfers, combine `--copy-pipe` with `--compress` to significantly boost throughput (commonly multiple times faster on high-latency links).
+For network-bound transfers, combine `--copy-pipe` with `--compress` to improve throughput on high-latency links.
 
 ### Table Filtering
 
@@ -193,17 +166,17 @@ pgcopy copy \
 ```
 
 ![Web UI dashboard](./assets/webui.jpg)
-<sub>Web mode launches a local dashboard for real-time monitoring.</sub>
+<sub>Web mode launches a local dashboard for live monitoring.</sub>
 
-The progress bar stays fixed at the top of the terminal while operational log messages scroll underneath. In web mode, a local dashboard is launched showing real-time status.
+The progress bar stays fixed at the top of the terminal while operational log messages scroll underneath. In web mode, a local dashboard is launched showing live status.
 
 ### Streaming COPY pipeline and compression
 
-`--copy-pipe` streams table data directly from the source to the destination using PostgreSQL COPY in binary mode. Adding `--compress` gzip-compresses the stream on the fly to cut network bandwidth. This combo can deliver dramatic speedups in network-bound scenarios (often several times faster, up to ~10x on slow links), with minimal memory footprint.
+`--copy-pipe` streams table data directly from the source to the destination using PostgreSQL COPY in binary mode. Adding `--compress` gzip-compresses the stream on the fly to cut network bandwidth. This combo can yield speedups in network-bound scenarios, with a minimal memory footprint.
 
 Key points:
 
-- Use `--copy-pipe` for maximum throughput without intermediate row buffering
+- Use `--copy-pipe` for higher throughput without intermediate row buffering
 - Add `--compress` to reduce bandwidth usage (requires `--copy-pipe`)
 - Works with parallel workers across multiple tables
 - Per-row progress granularity is limited during streaming; progress is reported at table completion
@@ -253,7 +226,7 @@ pgcopy copy \
 
 For the confirmation dialog, skip flags, recovery notes, and best practices, see [Safety & Overwrite Semantics](docs/safety.md).
 
-See the automation notes in [Safety & Overwrite Semantics](docs/safety.md) for --skip-backup usage.
+See the automation notes in [Safety & Overwrite Semantics](docs/safety.md) for `--skip-backup` usage.
 
 ## Commands
 
@@ -311,91 +284,11 @@ pgcopy copy \
 
 ## Foreign Key Management
 
-### pgcopy's Superpower: Non-Superuser FK Handling
-
-One of **pgcopy's** key advantages is its ability to handle complex foreign key constraints **without requiring superuser privileges**. This addresses a common pain point where:
-
-- Cloud databases often don't provide superuser access (AWS RDS, Google Cloud SQL, Azure Database)
-- Managed environments restrict administrative privileges
-- pg_dump/pg_restore fails with permission errors on constraint operations
-- Manual FK management becomes error-prone with circular dependencies
-
-### The Foreign Key Challenge
-
-When copying data between PostgreSQL databases with foreign key constraints, you typically face these issues:
-
-1. Constraint Violations: Inserting data in wrong order causes FK violations
-2. Circular Dependencies: Tables that reference each other create chicken-and-egg problems
-3. Permission Requirements: Standard solutions often require superuser access
-4. Manual Complexity: Hand-managing constraints is tedious and error-prone
-
-### pgcopy's Solution
-
-**pgcopy** solves these problems with intelligent constraint management:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. Scan all tables for foreign key constraints              │
-│ 2. Try replica mode (if superuser available)                │
-│ 3. Fall back to smart FK dropping (non-superuser)           │
-│ 4. Copy data in parallel (constraints disabled)             │
-│ 5. Restore all constraints with original definitions        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Automatic Detection and Handling
-
-`pgcopy` automatically detects and handles foreign key constraints in your database, including complex scenarios with circular dependencies.
-
-See [Foreign key handling](docs/foreign-keys.md) for modes, caveats, and recovery.
-
-More details in [Foreign key handling](docs/foreign-keys.md).
-
-### Real-World Example
-
-```bash
-# This works even without superuser privileges!
-pgcopy copy \
-  --source "postgres://user:pass@prod-rds.amazonaws.com:5432/myapp" \
-  --dest "postgres://user:pass@staging-rds.amazonaws.com:5432/myapp"
-```
-
-**Output:**
-
-```
-Starting data copy operation...
-20:53:26 INFO Detecting foreign key constraints...
-20:53:26 DONE Found 5 foreign key constraints
-20:53:26 DONE Using replica mode for foreign key handling
-20:53:26 INFO Copying table public.ContainerHistory (84.8K rows)
-...
-20:53:46 DONE Completed copying public.ContainerHistory (84.8K rows) in 20s
-20:53:48 DONE Completed copying public.ContainerBarcodes (112.9K rows) in 22s
-
-╔══════════════════════════════════════════════════════════════╗
-║                        📊 COPY STATISTICS                    ║
-╠══════════════════════════════════════════════════════════════╣
-║  📋 Tables Processed:                                     9  ║
-║  📊 Rows Copied:                                     439025  ║
-║  ⏱️  Duration:                                          22s  ║
-║  🚀 Average Speed:                             19322 rows/s  ║
-╚══════════════════════════════════════════════════════════════╝
-```
+pgcopy automatically handles complex foreign key constraints without superuser privileges. See [Foreign key handling](docs/foreign-keys.md) for strategies (replica vs drop/restore), idempotent restore, and recovery.
 
 ## Performance Considerations
 
-### When pgcopy Outperforms Traditional Methods
-
-**pgcopy** is specifically optimized for scenarios where traditional PostgreSQL tools fall short:
-
-#### vs. pg_dump/pg_restore Performance
-
-| Scenario | pg_dump/pg_restore | pgcopy | Advantage |
-|----------|-------------------|--------|-----------|
-| Large tables (>1M rows) | Serial processing | Parallel batching | 3-5x faster |
-| Many small tables | Overhead per table | Parallel workers | 2-4x faster |
-| Complex FK constraints | Manual intervention | Automatic handling | Much easier |
-| Cloud/managed databases | Permission issues | Works without superuser | Actually works |
+See [Performance](docs/performance.md) for comparisons and tuning guidance.
 
 #### Performance Characteristics
 
@@ -427,31 +320,6 @@ Starting data copy operation...
 - [Performance](docs/performance.md)
 - [Build & Release](docs/build-release.md)
 - [Quality & Security](docs/quality.md)
-- [Future Enhancements](docs/future.md)
-
-### Optimal Settings
-
-- Parallel Workers: Start with 4-8 workers, adjust based on your system resources
-- Batch Size: 1000-5000 rows per batch usually provides good performance
-- Connection Pooling: The tool automatically configures connection pools
-
-### Large Databases
-
-For very large databases:
-
-1. Use higher parallel worker counts (8-16)
-2. Increase batch size (5000-10000)
-3. Ensure both source and destination databases have adequate resources
-4. Consider network bandwidth between source and destination
-
-### Memory Usage
-
-Memory usage scales with:
-- Number of parallel workers
-- Batch size
-- Number of columns in tables
-
-Monitor memory usage and adjust settings accordingly.
 
 ## Examples
 

@@ -1,8 +1,9 @@
 # Table filtering with wildcards
 
-Both --include and --exclude accept comma-separated lists with wildcard patterns.
+Both `--include` and `--exclude` accept comma-separated lists with wildcard patterns.
 
 ## Patterns
+
 - `*` – any sequence of characters
 - `temp_*` – tables starting with `temp_`
 - `*_logs` – tables ending with `_logs`
@@ -10,6 +11,7 @@ Both --include and --exclude accept comma-separated lists with wildcard patterns
 - `test_*_data` – tables like `test_user_data`, `test_order_data`
 
 ## Examples
+
 ```bash
 # Exclude temp and logs
 pgcopy copy \
