@@ -205,9 +205,3 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - Create an issue on GitHub for bug reports or feature requests
 - Check existing issues before creating new ones
-
-## Acknowledgments
-
-- Built with [Cobra](https://github.com/spf13/cobra) for CLI functionality
-- Uses [lib/pq](https://github.com/lib/pq) PostgreSQL driver
-- Inspired by the need for efficient PostgreSQL data migration tools

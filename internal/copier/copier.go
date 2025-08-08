@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // Register pgx with database/sql
 	"github.com/koltyakov/pgcopy/internal/server"
 	"github.com/koltyakov/pgcopy/internal/state"
 	"github.com/koltyakov/pgcopy/internal/utils"
-	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/schollz/progressbar/v3"
 )
 
@@ -140,14 +140,13 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c.state.SetStatus(state.StatusInitializing)
 	c.state.AddLog(state.LogLevelInfo, "Initializing database connections", "copier", "", nil)
 
-	// Connect to source database
+	// Connect to source database using pgx stdlib driver
 	sourceConnStr := config.SourceConn
-	c.sourceDB, err = sql.Open("postgres", sourceConnStr)
+	c.sourceDB, err = sql.Open("pgx", sourceConnStr)
 	if err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to source: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to connect to source database: %w", err)
 	}
-
 	if err = c.sourceDB.Ping(); err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping source: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to ping source database: %w", err)
@@ -157,14 +156,13 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	sourceDetails := utils.ExtractConnectionDetails(sourceConnStr)
 	c.state.UpdateConnectionDetails("source", sourceDetails, state.ConnectionStatusConnected)
 
-	// Connect to destination database
+	// Connect to destination database using pgx stdlib driver
 	destConnStr := config.DestConn
-	c.destDB, err = sql.Open("postgres", destConnStr)
+	c.destDB, err = sql.Open("pgx", destConnStr)
 	if err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to dest: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to connect to destination database: %w", err)
 	}
-
 	if err = c.destDB.Ping(); err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping dest: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to ping destination database: %w", err)
@@ -174,7 +172,7 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	destDetails := utils.ExtractConnectionDetails(destConnStr)
 	c.state.UpdateConnectionDetails("destination", destDetails, state.ConnectionStatusConnected)
 
-	// Configure connection pools for performance
+	// Configure connection pools for performance (database/sql)
 	c.sourceDB.SetMaxOpenConns(config.Parallel * 2)
 	c.sourceDB.SetMaxIdleConns(config.Parallel)
 	c.sourceDB.SetConnMaxLifetime(time.Hour)

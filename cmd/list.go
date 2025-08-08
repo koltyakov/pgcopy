@@ -8,8 +8,8 @@ import (
 	"os"
 	"text/tabwriter"
 
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver via pgx stdlib
 	"github.com/koltyakov/pgcopy/internal/utils"
-	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +31,7 @@ Examples:
 			log.Fatal("--source connection string must be provided")
 		}
 
-		db, err := sql.Open("postgres", sourceConn)
+		db, err := sql.Open("pgx", sourceConn)
 		if err != nil {
 			log.Fatalf("Failed to connect to database: %v", err)
 		}

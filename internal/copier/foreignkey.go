@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/koltyakov/pgcopy/internal/utils"
-	"github.com/lib/pq"
 )
 
 const noAction = "NO ACTION"
@@ -102,6 +101,18 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 		return nil
 	}
 
+	// Build a parameterized IN clause to avoid array encoding dependency.
+	// We only interpolate the placeholder markers ($1,$2,...) which are not user input.
+	// #nosec G201
+	placeholders := make([]string, len(tableFilters))
+	args := make([]interface{}, len(tableFilters))
+	for i, tf := range tableFilters {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = tf
+	}
+
+	inClause := strings.Join(placeholders, ",")
+	// #nosec G202 - safe: only placeholder markers are concatenated, values are passed as parameters
 	query := `
 		SELECT 
 			tc.constraint_name,
@@ -124,14 +135,14 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 			ON tc.constraint_name = rc.constraint_name 
 			AND tc.table_schema = rc.constraint_schema
 		WHERE tc.constraint_type = 'FOREIGN KEY'
-			AND (tc.table_schema || '.' || tc.table_name) = ANY($1)
+			AND (tc.table_schema || '.' || tc.table_name) IN (` + inClause + `)
 		GROUP BY tc.constraint_name, tc.table_schema, tc.table_name, 
 			ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule
 		ORDER BY tc.table_schema, tc.table_name, tc.constraint_name`
 
 	ctx, cancel := context.WithTimeout(context.Background(), fkDetectTimeout)
 	defer cancel()
-	rows, err := fkm.db.QueryContext(ctx, query, pq.Array(tableFilters))
+	rows, err := fkm.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("failed to query foreign keys: %w", err)
 	}
