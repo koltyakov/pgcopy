@@ -127,6 +127,12 @@ func NewWithWebPort(config *Config, webPort ...int) (*Copier, error) {
 	return copier, nil
 }
 
+// State returns the underlying copy state for read-only observation (e.g., status polling).
+// Callers should use the snapshot methods on the state for thread-safe reads.
+func (c *Copier) State() *state.CopyState {
+	return c.state
+}
+
 // NewWithState creates a new Copier instance with an existing state
 func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c := &Copier{

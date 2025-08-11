@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/koltyakov/pgcopy/internal/copier"
+	"github.com/koltyakov/pgcopy/internal/state"
 	"github.com/koltyakov/pgcopy/internal/utils"
 	"github.com/spf13/cobra"
 )
@@ -135,11 +136,6 @@ Examples:
 				fmt.Printf("Port %d unavailable, selected free port %d\n", preferred, actualPort)
 			}
 
-			if err := openBrowser(fmt.Sprintf("http://localhost:%d", actualPort)); err != nil {
-				fmt.Printf("Could not open browser automatically: %v\n", err)
-				fmt.Printf("Open http://localhost:%d manually\n", actualPort)
-			}
-
 			stateCopier, err := copier.NewWithWebPort(config, actualPort)
 			if err != nil {
 				duration := time.Since(start)
@@ -154,6 +150,36 @@ Examples:
 			// Start copy operation in a goroutine
 			copyDone := make(chan error, 1)
 			go func() { copyDone <- stateCopier.Copy(ctx) }()
+
+			// Only auto-open the browser after overwrite confirmation. If --skip-backup is set,
+			// confirmation is bypassed and status will move to copying immediately.
+			if skipBackup {
+				if err := openBrowser(fmt.Sprintf("http://localhost:%d", actualPort)); err != nil {
+					fmt.Printf("Could not open browser automatically: %v\n", err)
+					fmt.Printf("Open http://localhost:%d manually\n", actualPort)
+				}
+			} else {
+				// Poll state until StatusCopying, then open browser
+				go func() {
+					ticker := time.NewTicker(200 * time.Millisecond)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ctx.Done():
+							return
+						case <-ticker.C:
+							snap := stateCopier.State().GetSnapshot()
+							if snap.Status == state.StatusCopying {
+								if err := openBrowser(fmt.Sprintf("http://localhost:%d", actualPort)); err != nil {
+									fmt.Printf("Could not open browser automatically: %v\n", err)
+									fmt.Printf("Open http://localhost:%d manually\n", actualPort)
+								}
+								return
+							}
+						}
+					}
+				}()
+			}
 
 			// Wait for either completion or interrupt
 			select {
