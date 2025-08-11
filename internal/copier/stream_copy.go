@@ -90,10 +90,59 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 		r = gzr
 	}
 
+	// Optional progress poller (PostgreSQL 14+): sample pg_stat_progress_copy for this backend PID.
+	// Uses a separate connection because dstConn is busy with COPY FROM. If the view isn't available,
+	// or no row is visible, the poller exits quietly.
+	stopPoll := make(chan struct{})
+	go func(schema, name string, pid uint32, _ int64) {
+		progCtx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		conn, err := pgx.Connect(progCtx, c.config.DestConn)
+		if err != nil {
+			// Can't poll, just return silently
+			return
+		}
+		defer func() { _ = conn.Close(progCtx) }()
+
+		t := time.NewTicker(500 * time.Millisecond)
+		defer t.Stop()
+
+		var last int64
+		for {
+			select {
+			case <-stopPoll:
+				return
+			case <-progCtx.Done():
+				return
+			case <-t.C:
+				var processed int64
+				// Note: pg_stat_progress_copy exists in PG14+. For STDIN streams, bytes_total may be NULL/0.
+				// We rely on tuples_processed and our planned TotalRows as denominator.
+				err = conn.QueryRow(progCtx, `
+					select coalesce(tuples_processed, 0)
+					from pg_stat_progress_copy
+					where pid = $1
+					limit 1`, int(pid)).Scan(&processed) //nolint:gosec // PID narrowing to int for query parameter is safe on supported platforms
+				if err != nil {
+					// If the view isn't present or row not visible, stop polling.
+					return
+				}
+				if processed > last {
+					inc := processed - last
+					last = processed
+					c.updateTableProgress(schema, name, inc)
+					c.updateProgress(inc)
+				}
+			}
+		}
+	}(table.Schema, table.Name, dstConn.PgConn().PID(), table.TotalRows)
+
 	startIn := time.Now()
 	if _, err := dstConn.PgConn().CopyFrom(ctx, r, copyInSQL); err != nil {
+		close(stopPoll)
 		return fmt.Errorf("copy in failed: %w", err)
 	}
+	close(stopPoll)
 	c.logger.Info("Applied streamed data to destination for %s in %s", utils.HighlightTableName(table.Schema, table.Name), utils.FormatDuration(time.Since(startIn)))
 
 	// We cannot easily update per-row progress in binary streaming mode without decoding.
