@@ -378,6 +378,111 @@ func (c *Copier) runExecution(ctx context.Context, planned []*TableInfo) error {
 	return c.executor.Execute(ctx, planned)
 }
 
+// buildDependencyLayers creates a topological layering of tables using FK dependencies.
+// Parent tables (referenced) are placed in earlier layers than their children (referencing).
+// Within a layer, tables are independent and may be processed in parallel.
+func (c *Copier) buildDependencyLayers(tables []*TableInfo) [][]*TableInfo { //nolint:funlen
+	if len(tables) == 0 {
+		return nil
+	}
+	// Map full name to table
+	nodes := make(map[string]*TableInfo, len(tables))
+	order := make([]string, 0, len(tables))
+	for _, t := range tables {
+		fn := fmt.Sprintf("%s.%s", t.Schema, t.Name)
+		nodes[fn] = t
+		order = append(order, fn)
+	}
+
+	// Build graph (parent -> child) for planned tables only
+	adj := make(map[string][]string)
+	indeg := make(map[string]int)
+	for _, name := range order {
+		indeg[name] = 0
+	}
+
+	// Use discovered FKs if available (populated earlier in setupForeignKeys)
+	if c.fkManager != nil {
+		for _, fk := range c.fkManager.foreignKeys {
+			parent := fmt.Sprintf("%s.%s", fk.ReferencedSchema, fk.ReferencedTable)
+			child := fmt.Sprintf("%s.%s", fk.Schema, fk.Table)
+			if parent == child { // ignore self-reference in ordering
+				continue
+			}
+			// Only consider edges fully within planned set
+			if _, ok := nodes[parent]; !ok {
+				continue
+			}
+			if _, ok := nodes[child]; !ok {
+				continue
+			}
+			adj[parent] = append(adj[parent], child)
+			indeg[child]++
+		}
+	}
+
+	// Kahn's algorithm producing layers
+	layers := make([][]*TableInfo, 0)
+	// Initialize queue with indegree 0 in stable order
+	var frontier []string
+	for _, name := range order {
+		if indeg[name] == 0 {
+			frontier = append(frontier, name)
+		}
+	}
+	// To make deterministic, sort each wave by name
+	sort.Strings(frontier)
+
+	visited := make(map[string]bool, len(nodes))
+
+	for len(frontier) > 0 {
+		// Current layer from frontier
+		curr := make([]string, len(frontier))
+		copy(curr, frontier)
+		frontier = frontier[:0]
+
+		// Convert to []*TableInfo with deterministic order by schema.name
+		sort.Strings(curr)
+		layer := make([]*TableInfo, 0, len(curr))
+		for _, name := range curr {
+			layer = append(layer, nodes[name])
+			visited[name] = true
+		}
+		layers = append(layers, layer)
+
+		// Decrease indegree of neighbors
+		for _, name := range curr {
+			for _, nb := range adj[name] {
+				indeg[nb]--
+				if indeg[nb] == 0 {
+					frontier = append(frontier, nb)
+				}
+			}
+		}
+		sort.Strings(frontier)
+	}
+
+	// If any nodes left (cycles or missing FK data), add them as a final layer in stable order
+	if len(visited) != len(nodes) {
+		var remaining []string
+		for name := range nodes {
+			if !visited[name] {
+				remaining = append(remaining, name)
+			}
+		}
+		sort.Strings(remaining)
+		last := make([]*TableInfo, 0, len(remaining))
+		for _, name := range remaining {
+			last = append(last, nodes[name])
+		}
+		if len(last) > 0 {
+			layers = append(layers, last)
+		}
+	}
+
+	return layers
+}
+
 // cleanupForeignKeys attempts to recover and cleanup FK artifacts
 func (c *Copier) cleanupForeignKeys() {
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
