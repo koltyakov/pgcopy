@@ -367,14 +367,33 @@
       border-radius: 3px;
       overflow: hidden;
       position: relative;
+      transition: background-color 0.2s ease;
     }
     
     .progress-bar > div {
       height: 100%;
       background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
       border-radius: 3px;
-      transition: width 0.3s ease;
+      transition: width 0.3s ease, filter 0.2s ease;
       position: relative;
+    }
+
+    /* Increase contrast when hovering over the row or the bar */
+    .table-row:hover .progress-bar,
+    .progress-container:hover .progress-bar {
+      background: var(--gray-300);
+    }
+
+    .table-row:hover .progress-bar > div,
+    .progress-container:hover .progress-bar > div {
+      filter: saturate(1.25) contrast(1.1);
+    }
+
+    /* Make percentage text a bit darker on hover for readability */
+    .table-row:hover .progress-text,
+    .progress-container:hover .progress-text {
+      color: var(--gray-800);
+      font-weight: 600;
     }
     
     .progress-bar-animated > div::after {
