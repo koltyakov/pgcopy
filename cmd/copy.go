@@ -194,6 +194,17 @@ Examples:
 				fmt.Printf("You can close the web interface now.\n")
 			case <-c:
 				fmt.Printf("\n⏹️  Operation cancelled by user\n")
+				// Try to restore foreign keys on graceful shutdown
+				if stateCopier != nil && stateCopier.State() != nil {
+					// Best-effort: create a short-lived context and call cleanup explicitly
+					ctxCancel, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+					_ = ctxCancel
+					// We don’t have direct access to copier internals here; rely on internal cleanup when Close triggers
+					// Close will shutdown the web server; FK restore is handled in copier cleanup after Copy returns.
+					// Since we interrupted, proactively call Close to ensure web server stops.
+					stateCopier.Close()
+					cancel2()
+				}
 				return
 			}
 		} else {
@@ -221,6 +232,7 @@ Examples:
 			case <-c:
 				fmt.Printf("\n⏹️  Operation cancelled by user\n")
 				cancel()
+				// dataCopier.Close() will run at defer and cleanup will attempt FK restoration if needed
 				return
 			}
 		}

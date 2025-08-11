@@ -69,6 +69,128 @@ func (fkm *ForeignKeyManager) Restore(table *TableInfo) error {
 // Cleanup removes residual FK backup artifacts after successful run.
 func (fkm *ForeignKeyManager) Cleanup() error { return fkm.CleanupBackupFile() }
 
+// DropAllForeignKeys drops all incoming foreign keys referencing any of the planned tables.
+// This prepares the database for TRUNCATE without CASCADE across the whole plan.
+func (fkm *ForeignKeyManager) DropAllForeignKeys(tables []*TableInfo) error {
+	if len(tables) == 0 {
+		return nil
+	}
+	// Build a set of planned full table names for fast lookup
+	planned := make(map[string]struct{}, len(tables))
+	for _, t := range tables {
+		planned[fmt.Sprintf("%s.%s", t.Schema, t.Name)] = struct{}{}
+	}
+
+	// Collect incoming FKs referencing any planned table
+	toDrop := make([]ForeignKey, 0)
+	for _, fk := range fkm.foreignKeys {
+		refFull := fmt.Sprintf("%s.%s", fk.ReferencedSchema, fk.ReferencedTable)
+		fkFull := fmt.Sprintf("%s.%s", fk.Schema, fk.Table)
+		if _, ok := planned[refFull]; ok {
+			// Ensure we only drop incoming (another table references the planned one)
+			if refFull != fkFull { // exclude self-referencing for now; handled as incoming but safe
+				toDrop = append(toDrop, fk)
+			}
+		}
+	}
+
+	if len(toDrop) == 0 {
+		return nil
+	}
+
+	fkm.logger.Info("Dropping %s foreign key constraint(s) globally before copy", utils.HighlightNumber(len(toDrop)))
+	for _, fk := range toDrop {
+		if err := fkm.dropForeignKey(&fk); err != nil {
+			return fmt.Errorf("failed to drop FK %s on %s.%s: %w", fk.ConstraintName, fk.Schema, fk.Table, err)
+		}
+	}
+	return nil
+}
+
+// RestoreAllForeignKeys attempts to restore all previously dropped FKs.
+func (fkm *ForeignKeyManager) RestoreAllForeignKeys() error {
+	if fkm.IsUsingReplicaMode() {
+		return nil
+	}
+	fkm.mu.RLock()
+	if len(fkm.droppedKeys) == 0 {
+		fkm.mu.RUnlock()
+		return nil
+	}
+	// Work on a snapshot to avoid mutation while iterating
+	snapshot := make([]ForeignKey, len(fkm.droppedKeys))
+	copy(snapshot, fkm.droppedKeys)
+	fkm.mu.RUnlock()
+
+	// Sort by dependency for safer recreation
+	sorted := fkm.sortKeysByDependency(snapshot)
+	restored := 0
+	for _, fk := range sorted {
+		constraintKey := fmt.Sprintf("%s.%s.%s", fk.Schema, fk.Table, fk.ConstraintName)
+		// Mark as processed so per-table restore won't redo it
+		fkm.mu.Lock()
+		already := fkm.processedConstraints[constraintKey]
+		if !already {
+			fkm.processedConstraints[constraintKey] = true
+		}
+		fkm.mu.Unlock()
+
+		// Recreate with retries similar to per-table restore
+		maxRetries := 3
+		var lastErr error
+		expectedSig := fkm.computeFKSignature(&fk)
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			ctx, cancel := fkm.newCtx(fkRestoreTimeout)
+			_, err := fkm.db.ExecContext(ctx, fk.Definition)
+			cancel()
+			if err == nil {
+				lastErr = nil
+				break
+			}
+			// If already exists and matches, consider restored
+			lower := strings.ToLower(err.Error())
+			if strings.Contains(lower, "already exists") {
+				if sig, ok, _ := fkm.getExistingFKSignature(fk.Schema, fk.Table, fk.ConstraintName); ok && sig == expectedSig {
+					lastErr = nil
+					break
+				}
+			}
+			lastErr = err
+			if attempt < maxRetries && fkm.shouldRetryFKError(err) {
+				time.Sleep(fkm.retryDelay(attempt))
+				continue
+			}
+			break
+		}
+		if lastErr == nil {
+			restored++
+			// Remove from droppedKeys and processed map
+			fkm.mu.Lock()
+			delete(fkm.processedConstraints, constraintKey)
+			// Rebuild droppedKeys without this fk
+			newDropped := make([]ForeignKey, 0, len(fkm.droppedKeys))
+			for _, dk := range fkm.droppedKeys {
+				same := dk.ConstraintName == fk.ConstraintName && dk.Schema == fk.Schema && dk.Table == fk.Table
+				if !same {
+					newDropped = append(newDropped, dk)
+				}
+			}
+			fkm.droppedKeys = newDropped
+			fkm.mu.Unlock()
+		} else {
+			fkm.logger.Warn("Failed to restore FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), lastErr)
+		}
+	}
+
+	if err := fkm.writeBackupSnapshot(); err != nil {
+		fkm.logger.Warn("Failed to update FK backup file: %v", err)
+	}
+	if restored > 0 {
+		fkm.logger.Info("Restored %s foreign key constraints globally", utils.HighlightNumber(restored))
+	}
+	return nil
+}
+
 // NewForeignKeyManager creates a new foreign key manager
 func NewForeignKeyManager(db *sql.DB, logger *utils.SimpleLogger, noTimeouts bool) *ForeignKeyManager {
 	return &ForeignKeyManager{

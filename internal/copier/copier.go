@@ -362,6 +362,12 @@ func (c *Copier) setupForeignKeys(planned []*TableInfo) error {
 	if err := c.fkManager.TryUseReplicaMode(); err != nil {
 		return err
 	}
+	// If we don't have replica mode, drop all incoming FKs referencing planned tables up front
+	if !c.fkManager.IsUsingReplicaMode() {
+		if err := c.fkManager.DropAllForeignKeys(planned); err != nil {
+			return fmt.Errorf("failed to drop foreign keys globally: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -376,6 +382,10 @@ func (c *Copier) runExecution(ctx context.Context, planned []*TableInfo) error {
 func (c *Copier) cleanupForeignKeys() {
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
 		c.logger.Warn("Failed to recover FKs from backup file: %v", recoveryErr)
+	}
+	// Attempt a global restore of any dropped FKs (no-op in replica mode)
+	if err := c.fkManager.RestoreAllForeignKeys(); err != nil {
+		c.logger.Warn("Failed to restore FKs globally: %v", err)
 	}
 	if c.fkStrategy != nil {
 		if cleanupErr := c.fkStrategy.Cleanup(); cleanupErr != nil {
