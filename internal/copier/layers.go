@@ -71,20 +71,16 @@ func (p *defaultPlanner) PlanLayers(tables []*TableInfo) ([][]*TableInfo, error)
 type defaultExecutor struct{ c *Copier }
 
 func (e *defaultExecutor) Execute(ctx context.Context, tables []*TableInfo) error {
-	// Build dependency layers via planner
-	layers, err := e.c.planner.PlanLayers(tables)
-	if err != nil || len(layers) == 0 {
-		// Fallback: single wave
-		return e.c.copyTablesParallel(ctx, tables)
-	}
-	// Process layers sequentially, preserving configured parallelism within a layer
-	for i, layer := range layers {
-		e.c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Processing layer %d/%d (%d tables)", i+1, len(layers), len(layer)), "copier", "", nil)
-		if err := e.c.copyTablesParallel(ctx, layer); err != nil {
-			return err
+	// Build dependency layers via planner (for visibility/metrics), but ignore sequencing for now
+	if layers, err := e.c.planner.PlanLayers(tables); err == nil {
+		if len(layers) > 0 {
+			e.c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Dependency graph constructed: %d layer(s). Sequencing temporarily disabled; processing in original order.", len(layers)), "copier", "", nil)
+		} else {
+			e.c.state.AddLog(state.LogLevelInfo, "Dependency graph constructed: 0 layers (processing in original order)", "copier", "", nil)
 		}
 	}
-	return nil
+	// Process all tables in one parallel run (original/planned order)
+	return e.c.copyTablesParallel(ctx, tables)
 }
 
 // defaultReporter is a no-op placeholder.
