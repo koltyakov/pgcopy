@@ -321,27 +321,8 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 		}
 		return quotedColumns
 	}(), ", ")
-	placeholders := make([]string, len(table.Columns))
-	for i := range placeholders {
-		placeholders[i] = fmt.Sprintf("$%d", i+1)
-	}
-	placeholderList := strings.Join(placeholders, ", ")
-
-	// Prepare insert statement for destination
-	insertQuery := fmt.Sprintf( // #nosec G201 - identifiers are quoted safely
-		"INSERT INTO %s (%s) VALUES (%s)",
-		utils.QuoteTable(table.Schema, table.Name), columnList, placeholderList,
-	)
-
-	insertStmt, err := c.destDB.PrepareContext(ctx, insertQuery)
-	if err != nil {
-		return fmt.Errorf("failed to prepare insert statement: %w", err)
-	}
-	defer func() {
-		if err := insertStmt.Close(); err != nil {
-			c.logger.Error("Failed to close insert statement: %v", err)
-		}
-	}()
+	// We'll build multi-row INSERT statements per batch (VALUES (...), (...), ...)
+	// Actual placeholder generation happens in processBatchBulk.
 
 	// Build select query with ordering for consistent pagination
 	var selectQuery string
@@ -377,8 +358,7 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 			cancel()
 			return fmt.Errorf("failed to select batch: %w", err)
 		}
-
-		batchRowsCopied, err := c.processBatch(ctx, rows, insertStmt, table)
+		batchRowsCopied, err := c.processBatchBulk(ctx, rows, table, columnList)
 		if err := rows.Close(); err != nil {
 			c.logger.Error("Failed to close batch rows: %v", err)
 		}
@@ -407,8 +387,8 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 	return nil
 }
 
-// processBatch processes a batch of rows
-func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *sql.Stmt, table *TableInfo) (int64, error) {
+// processBatchBulk processes a batch using a single or few multi-row INSERT statements
+func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *TableInfo, columnList string) (int64, error) { //nolint:funlen,gocognit
 	var bctx context.Context
 	var cancel context.CancelFunc
 	if c.config.NoTimeouts {
@@ -438,41 +418,84 @@ func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *s
 		}
 	}
 
-	txStmt := tx.Stmt(insertStmt)
-	defer func() {
-		if err := txStmt.Close(); err != nil {
-			c.logger.Error("Failed to close transaction statement: %v", err)
-		}
-	}()
-
-	var batchSize int64
-	values := make([]any, len(table.Columns))
-	valuePtrs := make([]any, len(table.Columns))
-
-	for i := range values {
-		valuePtrs[i] = &values[i]
-	}
-
+	// Pull rows into memory for this batch
+	var scanned [][]any
+	numCols := len(table.Columns)
 	for rows.Next() {
-		if err := rows.Scan(valuePtrs...); err != nil {
-			return batchSize, fmt.Errorf("failed to scan row: %w", err)
+		row := make([]any, numCols)
+		ptrs := make([]any, numCols)
+		for i := range ptrs {
+			ptrs[i] = &row[i]
 		}
-
-		if _, err := txStmt.ExecContext(bctx, values...); err != nil {
-			return batchSize, fmt.Errorf("failed to insert row: %w", err)
+		if err := rows.Scan(ptrs...); err != nil {
+			return 0, fmt.Errorf("failed to scan row: %w", err)
 		}
-
-		batchSize++
+		scanned = append(scanned, row)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("rows iteration error: %w", err)
 	}
 
-	if err := rows.Err(); err != nil {
-		return batchSize, fmt.Errorf("rows iteration error: %w", err)
+	if len(scanned) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("failed to commit empty batch transaction: %w", err)
+		}
+		committed = true
+		return 0, nil
+	}
+
+	// Parameter safety: PostgreSQL max parameters ~65535
+	const maxParams = 65000
+	maxRowsPerStmt := maxParams / numCols
+	if maxRowsPerStmt <= 0 {
+		maxRowsPerStmt = 1
+	}
+
+	totalInserted := int64(0)
+	// Insert in chunks if necessary
+	for start := 0; start < len(scanned); start += maxRowsPerStmt {
+		end := start + maxRowsPerStmt
+		if end > len(scanned) {
+			end = len(scanned)
+		}
+		chunk := scanned[start:end]
+
+		// Build placeholders ($1..$n) for chunk
+		var sb strings.Builder
+		sb.WriteString("INSERT INTO ")
+		sb.WriteString(utils.QuoteTable(table.Schema, table.Name))
+		sb.WriteString(" (")
+		sb.WriteString(columnList)
+		sb.WriteString(") VALUES ")
+
+		args := make([]any, 0, len(chunk)*numCols)
+		param := 1
+		for i, row := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("(")
+			for j := 0; j < numCols; j++ {
+				if j > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(fmt.Sprintf("$%d", param))
+				param++
+				args = append(args, row[j])
+			}
+			sb.WriteString(")")
+		}
+
+		stmt := sb.String()
+		if _, err := tx.ExecContext(bctx, stmt, args...); err != nil {
+			return totalInserted, fmt.Errorf("failed to insert batch (%d rows): %w", len(chunk), err)
+		}
+		totalInserted += int64(len(chunk))
 	}
 
 	if err := tx.Commit(); err != nil {
-		return batchSize, fmt.Errorf("failed to commit transaction: %w", err)
+		return totalInserted, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 	committed = true
-
-	return batchSize, nil
+	return totalInserted, nil
 }
