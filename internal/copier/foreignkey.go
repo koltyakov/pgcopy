@@ -123,6 +123,10 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 
 	inClause := strings.Join(placeholders, ",")
 	// #nosec G202 - safe: only placeholder markers are concatenated, values are passed as parameters
+	// Include FKs where either the referencing table (tc.table_schema.table_name) OR
+	// the referenced table (ccu.table_schema.table_name) is in scope. This ensures we
+	// also drop constraints on tables not included in the copy set but referencing
+	// tables we are about to truncate.
 	query := `
 		SELECT 
 			tc.constraint_name,
@@ -145,7 +149,8 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 			ON tc.constraint_name = rc.constraint_name 
 			AND tc.table_schema = rc.constraint_schema
 		WHERE tc.constraint_type = 'FOREIGN KEY'
-			AND (tc.table_schema || '.' || tc.table_name) IN (` + inClause + `)
+			AND ((tc.table_schema || '.' || tc.table_name) IN (` + inClause + `)
+				 OR (ccu.table_schema || '.' || ccu.table_name) IN (` + inClause + `))
 		GROUP BY tc.constraint_name, tc.table_schema, tc.table_name, 
 			ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule
 		ORDER BY tc.table_schema, tc.table_name, tc.constraint_name`
@@ -270,31 +275,28 @@ func (fkm *ForeignKeyManager) DropForeignKeysForTable(table *TableInfo) error {
 		return nil
 	}
 
-	// Find all FKs that need to be handled for this table
-	var relatedFKs []ForeignKey
+	// Find incoming FKs that reference this table (these block TRUNCATE)
+	var incomingFKs []ForeignKey
 	tableFullName := fmt.Sprintf("%s.%s", table.Schema, table.Name)
 
 	for _, fk := range fkm.foreignKeys {
 		fkTableName := fmt.Sprintf("%s.%s", fk.Schema, fk.Table)
 		refTableName := fmt.Sprintf("%s.%s", fk.ReferencedSchema, fk.ReferencedTable)
 
-		// Include if this table has FK constraints or is referenced by FK constraints
-		if fkTableName == tableFullName || refTableName == tableFullName {
-			relatedFKs = append(relatedFKs, fk)
+		// Only include FKs where another table references this table
+		// Outgoing FKs owned by this table do not block TRUNCATE of this table
+		if fkTableName != tableFullName && refTableName == tableFullName {
+			incomingFKs = append(incomingFKs, fk)
 		}
 	}
 
-	if len(relatedFKs) > 0 {
-		if fkm.IsUsingReplicaMode() {
-			// Replica mode handles FKs without dropping
-			return nil
-		}
-		fkm.logger.Info("Managing %s foreign key constraint(s) for table %s",
-			utils.HighlightNumber(len(relatedFKs)), utils.HighlightTableName(table.Schema, table.Name))
+	if len(incomingFKs) > 0 {
+		fkm.logger.Info("Dropping %s incoming foreign key constraint(s) referencing %s",
+			utils.HighlightNumber(len(incomingFKs)), utils.HighlightTableName(table.Schema, table.Name))
 	}
 
-	// Drop the foreign keys if not using replica mode
-	for _, fk := range relatedFKs {
+	// Drop the incoming foreign keys that reference this table to allow TRUNCATE without CASCADE
+	for _, fk := range incomingFKs {
 		if err := fkm.dropForeignKey(&fk); err != nil {
 			return fmt.Errorf("failed to drop FK %s on %s.%s: %w",
 				fk.ConstraintName, fk.Schema, fk.Table, err)
@@ -338,7 +340,7 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 		return nil
 	}
 
-	fkm.logger.Info("Restoring %s foreign key constraint(s) for table %s", utils.HighlightNumber(len(toRestore)), utils.HighlightTableName(table.Schema, table.Name))
+	fkm.logger.Info("Restoring %s incoming foreign key constraint(s) for table %s", utils.HighlightNumber(len(toRestore)), utils.HighlightTableName(table.Schema, table.Name))
 
 	// Sort by dependency order
 	sortedKeys := fkm.sortKeysByDependency(toRestore)

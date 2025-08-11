@@ -174,9 +174,13 @@ func (c *Copier) copyTable(ctx context.Context, table *TableInfo) error {
 		}
 	}
 
-	// Clear destination table first
-	if err := c.clearDestinationTable(ctx, table); err != nil {
-		return fmt.Errorf("failed to clear destination table: %w", err)
+	// Clear destination table first. For streaming pipeline we perform TRUNCATE inside
+	// the destination connection transaction that also does COPY so we can rollback
+	// on failure and avoid leaving the table empty.
+	if !c.config.UseCopyPipe {
+		if err := c.clearDestinationTable(ctx, table); err != nil {
+			return fmt.Errorf("failed to clear destination table: %w", err)
+		}
 	}
 
 	var err error
@@ -258,7 +262,8 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 				return fmt.Errorf("failed to set replica mode for truncate: %w", err)
 			}
 
-			query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", utils.QuoteTable(table.Schema, table.Name))
+			// No CASCADE here: FK drop/replica mode should permit truncate without cascading
+			query := fmt.Sprintf("TRUNCATE TABLE %s", utils.QuoteTable(table.Schema, table.Name))
 			if _, err := tx.ExecContext(tctx, query); err != nil {
 				lastErr = err
 				_ = tx.Rollback()
@@ -298,7 +303,8 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 		}
 		return fmt.Errorf("truncate failed for %s.\"%s\" for unknown reason", table.Schema, table.Name)
 	}
-	query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", utils.QuoteTable(table.Schema, table.Name))
+	// No CASCADE here: FK drop/replica mode should permit truncate without cascading
+	query := fmt.Sprintf("TRUNCATE TABLE %s", utils.QuoteTable(table.Schema, table.Name))
 	var tctx context.Context
 	var cancel context.CancelFunc
 	if c.config.NoTimeouts {

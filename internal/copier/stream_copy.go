@@ -34,10 +34,23 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 		}
 	}()
 
-	// If using replica mode FK strategy, set session_replication_role=replica so inserts bypass FK checks.
+	// We'll use a transaction on destination for TRUNCATE + COPY, with optional replica mode set locally.
+	tx, err := dstConn.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin dest tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if rerr := tx.Rollback(ctx); rerr != nil {
+				c.logger.Warn("Failed to rollback destination tx: %v", rerr)
+			}
+		}
+	}()
+
 	if c.fkManager != nil && c.fkManager.IsUsingReplicaMode() {
-		if _, err := dstConn.Exec(ctx, "SET session_replication_role = replica"); err != nil {
-			c.logger.Warn("Failed to set replica mode on streaming destination connection: %v", err)
+		if _, err := tx.Exec(ctx, "SET LOCAL session_replication_role = replica"); err != nil {
+			c.logger.Warn("Failed to set LOCAL replica mode on streaming tx: %v", err)
 		}
 	}
 
@@ -46,6 +59,12 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	qt := utils.QuoteTable(table.Schema, table.Name)
 	copyOutSQL := fmt.Sprintf("COPY %s (%s) TO STDOUT (FORMAT binary)", qt, columnList)
 	copyInSQL := fmt.Sprintf("COPY %s (%s) FROM STDIN (FORMAT binary)", qt, columnList)
+
+	// Ensure destination table is empty within the same tx so failures rollback.
+	// No CASCADE: FK handling is managed outside or via replica mode.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("TRUNCATE TABLE %s", qt)); err != nil {
+		return fmt.Errorf("truncate in streaming tx failed: %w", err)
+	}
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -138,11 +157,16 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	}(table.Schema, table.Name, dstConn.PgConn().PID(), table.TotalRows)
 
 	startIn := time.Now()
-	if _, err := dstConn.PgConn().CopyFrom(ctx, r, copyInSQL); err != nil {
+	if _, err := tx.Conn().PgConn().CopyFrom(ctx, r, copyInSQL); err != nil {
 		close(stopPoll)
 		return fmt.Errorf("copy in failed: %w", err)
 	}
 	close(stopPoll)
+	// Commit the transaction so TRUNCATE + COPY are atomic
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit dest tx failed: %w", err)
+	}
+	committed = true
 	c.logger.Info("Applied streamed data to destination for %s in %s", utils.HighlightTableName(table.Schema, table.Name), utils.FormatDuration(time.Since(startIn)))
 
 	// We cannot easily update per-row progress in binary streaming mode without decoding.
