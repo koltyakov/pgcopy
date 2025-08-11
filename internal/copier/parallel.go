@@ -183,7 +183,13 @@ func (c *Copier) copyTable(ctx context.Context, table *TableInfo) error {
 	if c.config.UseCopyPipe {
 		// Use streaming COPY pipeline
 		// Derive a generous timeout from provided ctx to avoid infinite runs
-		sctx, cancel := context.WithTimeout(ctx, 24*time.Hour) // configurable in the future
+		var sctx context.Context
+		var cancel context.CancelFunc
+		if c.config.NoTimeouts {
+			sctx, cancel = ctx, func() {}
+		} else {
+			sctx, cancel = context.WithTimeout(ctx, 24*time.Hour) // configurable in the future
+		}
 		defer cancel()
 		err = c.copyTableViaPipe(sctx, table)
 	} else {
@@ -223,8 +229,14 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 		// Use a transaction with replica mode for the truncate
 		// retry loop to mitigate deadlocks
 		var lastErr error
-		for attempt := 0; attempt < 3; attempt++ {
-			tctx, cancel := context.WithTimeout(ctx, truncateTimeout)
+		for attempt := range 3 {
+			var tctx context.Context
+			var cancel context.CancelFunc
+			if c.config.NoTimeouts {
+				tctx, cancel = ctx, func() {}
+			} else {
+				tctx, cancel = context.WithTimeout(ctx, truncateTimeout)
+			}
 			tx, err := c.destDB.BeginTx(tctx, &sql.TxOptions{})
 			if err != nil {
 				cancel()
@@ -287,7 +299,13 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 		return fmt.Errorf("truncate failed for %s.\"%s\" for unknown reason", table.Schema, table.Name)
 	}
 	query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", utils.QuoteTable(table.Schema, table.Name))
-	tctx, cancel := context.WithTimeout(ctx, truncateTimeout)
+	var tctx context.Context
+	var cancel context.CancelFunc
+	if c.config.NoTimeouts {
+		tctx, cancel = ctx, func() {}
+	} else {
+		tctx, cancel = context.WithTimeout(ctx, truncateTimeout)
+	}
 	defer cancel()
 	_, err := c.destDB.ExecContext(tctx, query)
 	if err != nil {
@@ -355,7 +373,13 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 
 	for {
 		// Select batch from source
-		sctx, cancel := context.WithTimeout(ctx, selectTimeout)
+		var sctx context.Context
+		var cancel context.CancelFunc
+		if c.config.NoTimeouts {
+			sctx, cancel = ctx, func() {}
+		} else {
+			sctx, cancel = context.WithTimeout(ctx, selectTimeout)
+		}
 		rows, err := c.sourceDB.QueryContext(sctx, selectQuery, offset)
 		if err != nil {
 			cancel()
@@ -393,7 +417,13 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 
 // processBatch processes a batch of rows
 func (c *Copier) processBatch(ctx context.Context, rows *sql.Rows, insertStmt *sql.Stmt, table *TableInfo) (int64, error) {
-	bctx, cancel := context.WithTimeout(ctx, txnTimeout)
+	var bctx context.Context
+	var cancel context.CancelFunc
+	if c.config.NoTimeouts {
+		bctx, cancel = ctx, func() {}
+	} else {
+		bctx, cancel = context.WithTimeout(ctx, txnTimeout)
+	}
 	defer cancel()
 	tx, err := c.destDB.BeginTx(bctx, &sql.TxOptions{})
 	if err != nil {

@@ -76,6 +76,10 @@ type OperationConfig struct {
 	// When true, pgcopy will compute exact row counts using COUNT(*) per table during discovery.
 	// This is slower but avoids inaccurate estimates (e.g., after TRUNCATE).
 	ExactRows bool `json:"exactRows"`
+
+	// Unlimited timeouts: when true, pgcopy won't set deadlines on internal DB operations
+	// (best-effort; still subject to external server timeouts)
+	NoTimeouts bool `json:"noTimeouts"`
 }
 
 // ConnectionDetails holds information about source and destination connections

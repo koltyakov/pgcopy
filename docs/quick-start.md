@@ -55,6 +55,7 @@ Note: this can be slower on very large tables.
 - Connection strings: standard postgres:// URIs; env vars like PGPASSWORD are respected
 - Permissions: you don’t need superuser; pgcopy handles foreign keys automatically
 - Cancel: Ctrl-C cancels gracefully; web UI waits for completion acknowledgment
+- Long operations: if default internal timeouts are too strict for your environment, use `--no-timeouts` to remove them (operations may wait indefinitely).
 
 ## Learn more
 

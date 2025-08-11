@@ -44,6 +44,7 @@ type ForeignKey struct {
 type ForeignKeyManager struct {
 	db                   *sql.DB
 	logger               *utils.SimpleLogger
+	noTimeouts           bool
 	foreignKeys          []ForeignKey
 	droppedKeys          []ForeignKey
 	useReplica           bool
@@ -69,15 +70,24 @@ func (fkm *ForeignKeyManager) Restore(table *TableInfo) error {
 func (fkm *ForeignKeyManager) Cleanup() error { return fkm.CleanupBackupFile() }
 
 // NewForeignKeyManager creates a new foreign key manager
-func NewForeignKeyManager(db *sql.DB, logger *utils.SimpleLogger) *ForeignKeyManager {
+func NewForeignKeyManager(db *sql.DB, logger *utils.SimpleLogger, noTimeouts bool) *ForeignKeyManager {
 	return &ForeignKeyManager{
 		db:                   db,
 		logger:               logger,
+		noTimeouts:           noTimeouts,
 		foreignKeys:          make([]ForeignKey, 0),
 		droppedKeys:          make([]ForeignKey, 0),
 		backupFile:           ".fk_backup.sql",
 		processedConstraints: make(map[string]bool),
 	}
+}
+
+// newCtx returns a context with timeout unless unlimited mode is enabled.
+func (fkm *ForeignKeyManager) newCtx(d time.Duration) (context.Context, context.CancelFunc) {
+	if fkm.noTimeouts {
+		return context.Background(), func() {}
+	}
+	return context.WithTimeout(context.Background(), d)
 }
 
 // SetLogger updates the logger for the foreign key manager
@@ -140,7 +150,7 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 			ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule
 		ORDER BY tc.table_schema, tc.table_name, tc.constraint_name`
 
-	ctx, cancel := context.WithTimeout(context.Background(), fkDetectTimeout)
+	ctx, cancel := fkm.newCtx(fkDetectTimeout)
 	defer cancel()
 	rows, err := fkm.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -222,7 +232,7 @@ func (fkm *ForeignKeyManager) buildConstraintDefinition(fk *ForeignKey) string {
 
 // TryUseReplicaMode attempts to use replica mode for FK handling
 func (fkm *ForeignKeyManager) TryUseReplicaMode() error {
-	ctx, cancel := context.WithTimeout(context.Background(), fkReplicaSetTimeout)
+	ctx, cancel := fkm.newCtx(fkReplicaSetTimeout)
 	defer cancel()
 	_, err := fkm.db.ExecContext(ctx, "SET session_replication_role = replica")
 	if err != nil {
@@ -243,7 +253,7 @@ func (fkm *ForeignKeyManager) DisableReplicaMode() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), fkReplicaSetTimeout)
+	ctx, cancel := fkm.newCtx(fkReplicaSetTimeout)
 	defer cancel()
 	_, err := fkm.db.ExecContext(ctx, "SET session_replication_role = default")
 	if err != nil {
@@ -368,7 +378,7 @@ func (fkm *ForeignKeyManager) RestoreForeignKeysForTable(table *TableInfo) error
 		maxRetries := 3
 		var lastErr error
 		for attempt := 1; attempt <= maxRetries; attempt++ {
-			ctx, cancel := context.WithTimeout(context.Background(), fkRestoreTimeout)
+			ctx, cancel := fkm.newCtx(fkRestoreTimeout)
 			_, err := fkm.db.ExecContext(ctx, fk.Definition)
 			cancel()
 			if err == nil {
@@ -520,7 +530,7 @@ func (fkm *ForeignKeyManager) getExistingFKSignature(schema, table, constraint s
 		  AND tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_name = $3
 		GROUP BY ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule`
 
-	ctx, cancel := context.WithTimeout(context.Background(), fkDetectTimeout)
+	ctx, cancel := fkm.newCtx(fkDetectTimeout)
 	defer cancel()
 	row := fkm.db.QueryRowContext(ctx, query, schema, table, constraint)
 	var cols, refSchema, refTable, refCols, del, upd string
@@ -574,7 +584,7 @@ func (fkm *ForeignKeyManager) dropForeignKey(fk *ForeignKey) error {
 
 	// Release lock temporarily for database operation
 	fkm.mu.Unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), fkDropTimeout)
+	ctx, cancel := fkm.newCtx(fkDropTimeout)
 	_, err := fkm.db.ExecContext(ctx, query)
 	cancel()
 	fkm.mu.Lock()
@@ -760,7 +770,7 @@ func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
 			// Remove trailing semicolon
 			statement := strings.TrimSuffix(line, ";")
 
-			ctx, cancel := context.WithTimeout(context.Background(), fkBackupExecTimeout)
+			ctx, cancel := fkm.newCtx(fkBackupExecTimeout)
 			_, err := fkm.db.ExecContext(ctx, statement)
 			cancel()
 			if err != nil {

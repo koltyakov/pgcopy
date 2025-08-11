@@ -191,7 +191,7 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c.logger = utils.NewSilentLogger()
 
 	// Initialize foreign key manager
-	c.fkManager = NewForeignKeyManager(c.destDB, c.logger)
+	c.fkManager = NewForeignKeyManager(c.destDB, c.logger, c.config.NoTimeouts)
 	c.fkStrategy = c.fkManager
 
 	// Initialize persistence (file logger)
@@ -463,7 +463,13 @@ func (c *Copier) getTablesToCopy() ([]*TableInfo, error) {
 		totalRows := rowCount.Int64
 		if c.config.ExactRows {
 			// Precise COUNT(*) with a short timeout per table to avoid blocking overall discovery
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if c.config.NoTimeouts {
+				ctx, cancel = context.Background(), func() {}
+			} else {
+				ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+			}
 			defer cancel()
 			//nolint:gosec // G201: identifiers can't be parameterized; schema/table are validated and safely quoted via utils.QuoteTable
 			preciseQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s", utils.QuoteTable(schema, name))

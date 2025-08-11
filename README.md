@@ -95,6 +95,7 @@ Copy data from source to destination database.
 - `--copy-pipe`: Use streaming COPY pipeline (source→dest) instead of row fetch + insert
 - `--compress`: Gzip-compress streaming COPY pipeline (requires `--copy-pipe`)
 - `--exact-rows`: Compute exact source row counts with `COUNT(*)` during discovery to avoid bad estimates after TRUNCATE (slower on large tables)
+- `--no-timeouts`: Disable internal operation timeouts (use with caution; operations may wait indefinitely)
 
 ### `list`
 
@@ -161,6 +162,8 @@ See [Performance](docs/performance.md) for comparisons and tuning guidance.
 ## Examples
 
 See [Quick start](docs/quick-start.md) for compact, copy-pasteable examples covering dry-run, web UI, performance flags, and filtering.
+
+Tip: If your environment requires very long-running operations, you can pass `--no-timeouts` to disable internal deadlines. This relies on server-side timeouts for protection and may wait indefinitely.
 
 ## Building from Source
 
