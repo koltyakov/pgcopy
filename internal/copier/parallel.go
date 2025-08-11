@@ -417,6 +417,10 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 			return 0, fmt.Errorf("failed to set replica mode for transaction: %w", err)
 		}
 	}
+	// Speed up bulk inserts by disabling synchronous commits for this transaction
+	if _, err := tx.ExecContext(bctx, "SET LOCAL synchronous_commit = OFF"); err != nil {
+		c.logger.Warn("Could not set synchronous_commit=OFF for bulk insert tx: %v", err)
+	}
 
 	// Pull rows into memory for this batch
 	var scanned [][]any
@@ -454,10 +458,7 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 	totalInserted := int64(0)
 	// Insert in chunks if necessary
 	for start := 0; start < len(scanned); start += maxRowsPerStmt {
-		end := start + maxRowsPerStmt
-		if end > len(scanned) {
-			end = len(scanned)
-		}
+		end := min(start+maxRowsPerStmt, len(scanned))
 		chunk := scanned[start:end]
 
 		// Build placeholders ($1..$n) for chunk
@@ -475,7 +476,7 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 				sb.WriteString(", ")
 			}
 			sb.WriteString("(")
-			for j := 0; j < numCols; j++ {
+			for j := range numCols {
 				if j > 0 {
 					sb.WriteString(", ")
 				}
@@ -487,6 +488,8 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 		}
 
 		stmt := sb.String()
+		// Debug: log the actual INSERT and number of rows per chunk
+		c.logger.Debug("INSERT for %s: %d rows, SQL: %s", utils.HighlightTableName(table.Schema, table.Name), len(chunk), stmt)
 		if _, err := tx.ExecContext(bctx, stmt, args...); err != nil {
 			return totalInserted, fmt.Errorf("failed to insert batch (%d rows): %w", len(chunk), err)
 		}

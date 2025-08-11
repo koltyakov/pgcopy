@@ -187,7 +187,7 @@ func TestForeignKeyManager_ConcurrentAccess(t *testing.T) {
 	}
 
 	// Start concurrent operations
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(2)
 		go dropFKs(testFKs)
 		go restoreFKs()
@@ -216,7 +216,7 @@ func TestForeignKeyManager_GetStatsThreadSafe(t *testing.T) {
 	var wg sync.WaitGroup
 	numReads := 100
 
-	for i := 0; i < numReads; i++ {
+	for range numReads {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
