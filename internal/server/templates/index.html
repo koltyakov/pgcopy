@@ -852,12 +852,35 @@
         const sortedTables = this.sortTables(filteredTables);
         const tbody = document.querySelector('#tablesTable tbody');
         if (!tbody) return;
-        
-        tbody.innerHTML = '';
-        
+
+        // Build a map of existing rows by id
+        const existing = new Map();
+        Array.from(tbody.querySelectorAll('tr.table-row')).forEach(tr => {
+          const id = tr.getAttribute('data-id');
+          if (id) existing.set(id, tr);
+        });
+
+        // Track which ids we keep this pass
+        const keep = new Set();
+
+        // Patch or create rows, and reorder by appending in sorted order
         sortedTables.forEach(table => {
-          const row = this.createTableRow(table);
+          const id = (table.fullName || table.name || '').toLowerCase();
+          if (!id) return;
+          keep.add(id);
+          let row = existing.get(id);
+          if (!row) {
+            row = this.createTableRow(table);
+          } else {
+            this.updateTableRow(row, table);
+          }
+          // Append moves the node if it already exists, preserving the element and its selection
           tbody.appendChild(row);
+        });
+
+        // Remove rows that are no longer present (filtered out or gone)
+        existing.forEach((tr, id) => {
+          if (!keep.has(id)) tr.remove();
         });
       }
 
@@ -881,7 +904,7 @@
         const dir = this.sortDir === 'asc' ? 1 : -1;
         const statusOrder = { pending: 1, copying: 2, completed: 3, failed: 4 };
         const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
-  return [...tables].sort((a, b) => {
+        return [...tables].sort((a, b) => {
           let cmp = 0;
           switch (this.sortKey) {
             case 'table': {
@@ -934,6 +957,7 @@
       createTableRow(table) {
         const row = document.createElement('tr');
         row.className = 'table-row status-' + table.status;
+        row.setAttribute('data-id', (table.fullName || table.name || '').toLowerCase());
         
         const statusIcon = this.getStatusIcon(table.status);
         const progress = this.calculateProgress(table);
@@ -952,6 +976,47 @@
           '<td class="speed-cell">' + this.formatSpeed(table.speed || 0) + '</td>';
         
         return row;
+      }
+
+      updateTableRow(row, table) {
+        try {
+          // Row status class
+          row.className = 'table-row status-' + table.status;
+
+          // Status cell: icon + text
+          const statusCell = row.querySelector('.status-cell');
+          if (statusCell) {
+            const iconEl = statusCell.querySelector('i');
+            if (iconEl) iconEl.className = this.getStatusIcon(table.status);
+            const textEl = statusCell.querySelector('.status-text');
+            if (textEl) textEl.textContent = this.formatStatus(table.status);
+          }
+
+          // Progress cell: bar width + text + animated class
+          const progress = this.calculateProgress(table);
+          const bar = row.querySelector('.progress-bar');
+          if (bar) {
+            const inner = bar.querySelector('div');
+            if (inner) inner.style.width = progress + '%';
+            bar.classList.toggle('progress-bar-animated', table.status === 'copying');
+          }
+          const pctText = row.querySelector('.progress-text');
+          if (pctText) pctText.textContent = progress + '%';
+
+          // Duration
+          const durationCell = row.querySelector('.duration-cell');
+          if (durationCell) durationCell.textContent = this.getTableDuration(table) || '--';
+
+          // Records
+          const recordsCell = row.querySelector('.records-cell');
+          if (recordsCell) recordsCell.textContent = this.formatNumber(table.totalRows || 0);
+
+          // Speed
+          const speedCell = row.querySelector('.speed-cell');
+          if (speedCell) speedCell.textContent = this.formatSpeed(table.speed || 0);
+        } catch (_) {
+          // no-op: partial update should not throw
+        }
       }
 
       getTableDuration(table) {
