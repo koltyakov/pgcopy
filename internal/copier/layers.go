@@ -48,9 +48,7 @@ type ProgressSink interface {
 // ForeignKeyStrategy abstracts FK handling modes.
 type ForeignKeyStrategy interface {
 	Detect(tables []*TableInfo) error
-	Prepare(table *TableInfo) error // before copy of a table
-	Restore(table *TableInfo) error // after copy of a table
-	Cleanup() error                 // after all tables
+	Cleanup() error // after all tables
 }
 
 // defaultDiscovery bridges to existing copier methods.

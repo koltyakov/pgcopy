@@ -167,13 +167,6 @@ func (c *Copier) copyTable(ctx context.Context, table *TableInfo) error {
 
 	c.logger.Info("Copying table %s (%s rows)", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)))
 
-	// Drop foreign keys for this table if not using replica mode
-	if c.fkStrategy != nil {
-		if err := c.fkStrategy.Prepare(table); err != nil {
-			return fmt.Errorf("failed to drop foreign keys for table: %w", err)
-		}
-	}
-
 	// Clear destination table first. For streaming pipeline we perform TRUNCATE inside
 	// the destination connection transaction that also does COPY so we can rollback
 	// on failure and avoid leaving the table empty.
@@ -203,13 +196,6 @@ func (c *Copier) copyTable(ctx context.Context, table *TableInfo) error {
 
 	if err != nil {
 		return err
-	}
-
-	// Restore foreign keys for this table immediately after copying
-	if c.fkStrategy != nil {
-		if restoreErr := c.fkStrategy.Restore(table); restoreErr != nil {
-			c.logger.Warn("Failed to restore foreign keys for %s: %v", utils.HighlightTableName(table.Schema, table.Name), restoreErr)
-		}
 	}
 
 	// After data load, ensure any sequences backing columns on this table are set correctly

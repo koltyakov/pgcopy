@@ -176,6 +176,3 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 
 	return nil
 }
-
-// quoteJoin joins identifiers with quoting.
-// moved to utils.QuoteJoinIdents

@@ -62,7 +62,7 @@ func TestForeignKeyManager_buildConstraintDefinition(t *testing.T) {
 
 	definition := fkm.buildConstraintDefinition(fk)
 
-	expected := `ALTER TABLE "public"."orders" ADD CONSTRAINT "fk_test" FOREIGN KEY ("user_id", "status_id") REFERENCES "public"."users" ("id", "status") ON DELETE CASCADE ON UPDATE RESTRICT`
+	expected := `ALTER TABLE "public"."orders" ADD CONSTRAINT "fk_test" FOREIGN KEY ("user_id", "status_id") REFERENCES "public"."users" ("id", "status") ON DELETE CASCADE ON UPDATE RESTRICT NOT VALID`
 
 	if definition != expected {
 		t.Errorf("Expected:\n%s\nGot:\n%s", expected, definition)
@@ -86,7 +86,7 @@ func TestForeignKeyManager_buildConstraintDefinition_NoActions(t *testing.T) {
 
 	definition := fkm.buildConstraintDefinition(fk)
 
-	expected := `ALTER TABLE "public"."orders" ADD CONSTRAINT "fk_simple" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id")`
+	expected := `ALTER TABLE "public"."orders" ADD CONSTRAINT "fk_simple" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") NOT VALID`
 
 	if definition != expected {
 		t.Errorf("Expected:\n%s\nGot:\n%s", expected, definition)
