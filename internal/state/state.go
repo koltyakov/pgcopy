@@ -80,6 +80,12 @@ type OperationConfig struct {
 	// Unlimited timeouts: when true, pgcopy won't set deadlines on internal DB operations
 	// (best-effort; still subject to external server timeouts)
 	NoTimeouts bool `json:"noTimeouts"`
+
+	// Snapshot: when true, each table is read inside a REPEATABLE READ transaction
+	// ensuring a stable snapshot for pagination (new rows added after the table
+	// copy started won't appear or shift ordering). This helps avoid pagination
+	// anomalies when using keyset iteration.
+	Snapshot bool `json:"snapshot"`
 }
 
 // ConnectionDetails holds information about source and destination connections

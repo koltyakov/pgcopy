@@ -313,7 +313,7 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 }
 
 // copyTableData copies table data in batches
-func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
+func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error { //nolint:funlen,gocognit
 	columnList := strings.Join(func() []string {
 		quotedColumns := make([]string, len(table.Columns))
 		for i, col := range table.Columns {
@@ -321,31 +321,108 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 		}
 		return quotedColumns
 	}(), ", ")
-	// We'll build multi-row INSERT statements per batch (VALUES (...), (...), ...)
-	// Actual placeholder generation happens in processBatchBulk.
 
-	// Build select query with ordering for consistent pagination
-	var selectQuery string
-	if len(table.PKColumns) > 0 {
-		// Use primary key for ordering if available
-		orderBy := utils.QuoteJoinIdents(table.PKColumns)
-		selectQuery = fmt.Sprintf(
-			"SELECT %s FROM %s ORDER BY %s LIMIT %d OFFSET $1",
-			columnList, utils.QuoteTable(table.Schema, table.Name), orderBy, c.config.BatchSize,
-		)
-	} else {
-		// Use ctid for ordering if no primary key (less efficient but works)
-		selectQuery = fmt.Sprintf(
-			"SELECT %s FROM %s ORDER BY ctid LIMIT %d OFFSET $1",
-			columnList, utils.QuoteTable(table.Schema, table.Name), c.config.BatchSize,
-		)
+	// Snapshot transaction (optional). We create a dedicated connection/tx to ensure
+	// REPEATABLE READ isolation so pagination isn't affected by concurrent inserts.
+	var snapshotTx *sql.Tx
+	var snapshotCancel context.CancelFunc = func() {}
+	if c.config.Snapshot {
+		var sctx context.Context
+		if c.config.NoTimeouts {
+			sctx, snapshotCancel = context.WithCancel(ctx)
+		} else {
+			sctx, snapshotCancel = context.WithTimeout(ctx, 24*time.Hour)
+		}
+		// Use REPEATABLE READ for a stable view
+		tx, err := c.sourceDB.BeginTx(sctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+		if err != nil {
+			snapshotCancel()
+			return fmt.Errorf("failed to start snapshot tx: %w", err)
+		}
+		snapshotTx = tx
+		defer func() {
+			_ = snapshotTx.Rollback() // safe if already committed/rolled back
+			snapshotCancel()
+		}()
 	}
 
-	offset := 0
+	// Helper to run queries either inside snapshot tx or base DB
+	queryContext := func(qctx context.Context, query string, args ...any) (*sql.Rows, error) {
+		if snapshotTx != nil {
+			return snapshotTx.QueryContext(qctx, query, args...)
+		}
+		return c.sourceDB.QueryContext(qctx, query, args...)
+	}
+
 	rowsCopied := int64(0)
 
+	// If table has PK(s), use keyset pagination; else fall back to OFFSET on ctid
+	if len(table.PKColumns) == 0 {
+		// Fallback: existing OFFSET pagination using ctid
+		selectBase := fmt.Sprintf("SELECT %s FROM %s ORDER BY ctid LIMIT %d OFFSET $1", columnList, utils.QuoteTable(table.Schema, table.Name), c.config.BatchSize)
+		offset := 0
+		for {
+			var sctx context.Context
+			var cancel context.CancelFunc
+			if c.config.NoTimeouts {
+				sctx, cancel = ctx, func() {}
+			} else {
+				sctx, cancel = context.WithTimeout(ctx, selectTimeout)
+			}
+			rows, err := queryContext(sctx, selectBase, offset)
+			if err != nil {
+				cancel()
+				return fmt.Errorf("failed to select batch: %w", err)
+			}
+			batchRowsCopied, err := c.processBatchBulk(ctx, rows, table, columnList)
+			if err := rows.Close(); err != nil {
+				c.logger.Error("Failed to close batch rows: %v", err)
+			}
+			cancel()
+			if err != nil {
+				return fmt.Errorf("failed to process batch: %w", err)
+			}
+			rowsCopied += batchRowsCopied
+			c.updateProgress(batchRowsCopied)
+			c.updateTableProgress(table.Schema, table.Name, rowsCopied)
+			if batchRowsCopied < int64(c.config.BatchSize) {
+				break
+			}
+			offset += c.config.BatchSize
+		}
+		return nil
+	}
+
+	// Keyset pagination
+	pkCols := table.PKColumns
+	quotedPK := utils.QuoteJoinIdents(pkCols)
+
+	// Build WHERE clause template for keyset (multi-column lexicographic)
+	// For single column: WHERE pk > $X ORDER BY pk
+	// For composite: (pk1,pk2,...) > (last1,last2,...) using tuple comparison
+	var whereClause string
+	orderBy := quotedPK
+	if len(pkCols) == 1 {
+		whereClause = fmt.Sprintf("%s > $1", utils.QuoteIdent(pkCols[0]))
+	} else {
+		// Build ($1,$2,...) tuple
+		placeholders := make([]string, len(pkCols))
+		for i := range pkCols {
+			placeholders[i] = fmt.Sprintf("$%d", i+1)
+		}
+		whereClause = fmt.Sprintf("(%s) > (%s)", quotedPK, strings.Join(placeholders, ","))
+	}
+
+	buildSelect := func(hasCursor bool) string {
+		if hasCursor {
+			return fmt.Sprintf("SELECT %s FROM %s WHERE %s ORDER BY %s LIMIT %d", columnList, utils.QuoteTable(table.Schema, table.Name), whereClause, orderBy, c.config.BatchSize)
+		}
+		return fmt.Sprintf("SELECT %s FROM %s ORDER BY %s LIMIT %d", columnList, utils.QuoteTable(table.Schema, table.Name), orderBy, c.config.BatchSize)
+	}
+
+	// Track last seen PK values
+	var lastPK []any
 	for {
-		// Select batch from source
 		var sctx context.Context
 		var cancel context.CancelFunc
 		if c.config.NoTimeouts {
@@ -353,38 +430,161 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error {
 		} else {
 			sctx, cancel = context.WithTimeout(ctx, selectTimeout)
 		}
-		rows, err := c.sourceDB.QueryContext(sctx, selectQuery, offset)
+		var rows *sql.Rows
+		var err error
+		if len(lastPK) == 0 {
+			rows, err = queryContext(sctx, buildSelect(false))
+		} else {
+			rows, err = queryContext(sctx, buildSelect(true), lastPK...)
+		}
 		if err != nil {
 			cancel()
-			return fmt.Errorf("failed to select batch: %w", err)
+			return fmt.Errorf("failed to select keyset batch: %w", err)
 		}
-		batchRowsCopied, err := c.processBatchBulk(ctx, rows, table, columnList)
-		if err := rows.Close(); err != nil {
-			c.logger.Error("Failed to close batch rows: %v", err)
+
+		// We'll read rows twice: first capture PK values to prepare next cursor, then bulk insert
+		// So we buffer rows similarly to processBatchBulk (can't reuse it directly to peek PKs first)
+		// Instead we scan all rows into memory (like processBatchBulk does) then insert via existing helper by re-querying? Simpler: extend processBatchBulk to return lastPK? Avoid major refactor: replicate the buffering logic here then do insert manually (duplicating some logic) but to limit duplication we'll call a new internal helper.
+		batchData, pkValues, err := c.scanBatch(rows, table)
+		if cerr := rows.Close(); cerr != nil {
+			c.logger.Error("Failed to close batch rows: %v", cerr)
 		}
 		cancel()
-
 		if err != nil {
-			return fmt.Errorf("failed to process batch: %w", err)
+			return fmt.Errorf("failed to scan keyset batch: %w", err)
 		}
-
-		rowsCopied += batchRowsCopied
-
-		// Update progress periodically
-		c.updateProgress(batchRowsCopied)
-
-		// Update table-specific progress for state tracking
-		c.updateTableProgress(table.Schema, table.Name, rowsCopied)
-
-		// If we got fewer rows than batch size, we're done
-		if batchRowsCopied < int64(c.config.BatchSize) {
+		if len(batchData) == 0 { // done
 			break
 		}
-
-		offset += c.config.BatchSize
+		inserted, err := c.insertScannedBatch(ctx, table, columnList, batchData)
+		if err != nil {
+			return fmt.Errorf("failed to insert keyset batch: %w", err)
+		}
+		rowsCopied += inserted
+		c.updateProgress(inserted)
+		c.updateTableProgress(table.Schema, table.Name, rowsCopied)
+		if int(inserted) < c.config.BatchSize { // last batch
+			break
+		}
+		lastPK = pkValues
 	}
-
 	return nil
+}
+
+// scanBatch reads all rows of a keyset batch capturing both full row data and last PK tuple
+func (c *Copier) scanBatch(rows *sql.Rows, table *TableInfo) (data [][]any, lastPK []any, err error) {
+	numCols := len(table.Columns)
+	pkIndex := make([]int, len(table.PKColumns))
+	for i, pk := range table.PKColumns {
+		for j, col := range table.Columns {
+			if col == pk {
+				pkIndex[i] = j
+				break
+			}
+		}
+	}
+	for rows.Next() {
+		row := make([]any, numCols)
+		ptrs := make([]any, numCols)
+		for i := range ptrs {
+			ptrs[i] = &row[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return data, lastPK, err
+		}
+		data = append(data, row)
+	}
+	if err := rows.Err(); err != nil {
+		return data, lastPK, err
+	}
+	if len(data) > 0 {
+		last := data[len(data)-1]
+		lastPK = make([]any, len(pkIndex))
+		for i, idx := range pkIndex {
+			lastPK[i] = last[idx]
+		}
+	}
+	return data, lastPK, nil
+}
+
+// insertScannedBatch inserts an already-scanned batch (mirrors processBatchBulk logic without scanning)
+func (c *Copier) insertScannedBatch(ctx context.Context, table *TableInfo, columnList string, scanned [][]any) (int64, error) { //nolint:funlen
+	if len(scanned) == 0 {
+		return 0, nil
+	}
+	var bctx context.Context
+	var cancel context.CancelFunc
+	if c.config.NoTimeouts {
+		bctx, cancel = ctx, func() {}
+	} else {
+		bctx, cancel = context.WithTimeout(ctx, txnTimeout)
+	}
+	defer cancel()
+	tx, err := c.destDB.BeginTx(bctx, &sql.TxOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if err := tx.Rollback(); err != nil {
+				c.logger.Error("Failed to rollback batch transaction: %v", err)
+			}
+		}
+	}()
+	if c.fkManager.IsUsingReplicaMode() {
+		if _, err := tx.ExecContext(bctx, "SET LOCAL session_replication_role = replica"); err != nil {
+			return 0, fmt.Errorf("failed to set replica mode for transaction: %w", err)
+		}
+	}
+	if _, err := tx.ExecContext(bctx, "SET LOCAL synchronous_commit = OFF"); err != nil {
+		c.logger.Warn("Could not set synchronous_commit=OFF for bulk insert tx: %v", err)
+	}
+	numCols := len(table.Columns)
+	const maxParams = 65000
+	maxRowsPerStmt := maxParams / numCols
+	if maxRowsPerStmt <= 0 {
+		maxRowsPerStmt = 1
+	}
+	totalInserted := int64(0)
+	for start := 0; start < len(scanned); start += maxRowsPerStmt {
+		end := min(start+maxRowsPerStmt, len(scanned))
+		chunk := scanned[start:end]
+		var sb strings.Builder
+		sb.WriteString("INSERT INTO ")
+		sb.WriteString(utils.QuoteTable(table.Schema, table.Name))
+		sb.WriteString(" (")
+		sb.WriteString(columnList)
+		sb.WriteString(") VALUES ")
+		args := make([]any, 0, len(chunk)*numCols)
+		param := 1
+		for i, row := range chunk {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString("(")
+			for j := range numCols {
+				if j > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(fmt.Sprintf("$%d", param))
+				param++
+				args = append(args, row[j])
+			}
+			sb.WriteString(")")
+		}
+		stmt := sb.String()
+		c.logger.Debug("INSERT (keyset) for %s: %d rows", utils.HighlightTableName(table.Schema, table.Name), len(chunk))
+		if _, err := tx.ExecContext(bctx, stmt, args...); err != nil {
+			return totalInserted, fmt.Errorf("failed to insert batch (%d rows): %w", len(chunk), err)
+		}
+		totalInserted += int64(len(chunk))
+	}
+	if err := tx.Commit(); err != nil {
+		return totalInserted, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+	committed = true
+	return totalInserted, nil
 }
 
 // processBatchBulk processes a batch using a single or few multi-row INSERT statements

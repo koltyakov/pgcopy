@@ -86,6 +86,7 @@ Examples:
 		compressPipe, _ := cmd.Flags().GetBool("compress")
 		exactRows, _ := cmd.Flags().GetBool("exact-rows")
 		noTimeouts, _ := cmd.Flags().GetBool("no-timeouts")
+		snapshot, _ := cmd.Flags().GetBool("snapshot")
 		// Parse display mode
 		var displayMode copier.DisplayMode
 		switch output {
@@ -115,6 +116,7 @@ Examples:
 			CompressPipe:  compressPipe,
 			ExactRows:     exactRows,
 			NoTimeouts:    noTimeouts,
+			Snapshot:      snapshot,
 		}
 
 		start := time.Now()
@@ -255,4 +257,5 @@ func init() {
 	copyCmd.Flags().Bool("compress", false, "Gzip-compress streaming COPY pipeline (requires --copy-pipe)")
 	copyCmd.Flags().Bool("exact-rows", false, "Use exact row counting (COUNT(*)) during discovery to avoid bad estimates after TRUNCATE; slower on large tables")
 	copyCmd.Flags().Bool("no-timeouts", false, "Disable internal operation timeouts (use with caution; may wait indefinitely)")
+	copyCmd.Flags().Bool("snapshot", false, "Read each table inside a REPEATABLE READ transaction to ensure consistent pagination (avoids missing/duplicate rows if new rows are inserted during copy)")
 }
