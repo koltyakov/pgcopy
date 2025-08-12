@@ -73,6 +73,8 @@ type Copier struct {
 	progressBar        *progressbar.ProgressBar
 	fileLogger         *log.Logger         // Logger for copy.log file
 	logFile            *os.File            // File handle for copy.log
+	errorLogger        *log.Logger         // Logger for errors.log file
+	errorLogFile       *os.File            // File handle for errors.log
 	logger             *utils.SimpleLogger // Utils logger for colorized output
 	interactiveMode    bool                // Whether to use interactive display
 	interactiveDisplay *InteractiveDisplay // Interactive progress display
@@ -146,6 +148,18 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c.state.SetStatus(state.StatusInitializing)
 	c.state.AddLog(state.LogLevelInfo, "Initializing database connections", "copier", "", nil)
 
+	// Initialize loggers early so connection errors are captured
+	if err := c.initFileLogger(); err != nil { // copy.log
+		return nil, fmt.Errorf("failed to initialize file logger: %w", err)
+	}
+	if err := c.initErrorLogger(); err != nil { // errors.log
+		// Non-fatal; proceed but warn to stderr
+		fmt.Fprintf(os.Stderr, "Failed to initialize errors.log: %v\n", err)
+	}
+
+	// Subscribe copier itself as a listener to capture error events
+	c.state.Subscribe(c)
+
 	// Connect to source database using pgx stdlib driver
 	sourceConnStr := config.SourceConn
 	c.sourceDB, err = sql.Open("pgx", sourceConnStr)
@@ -194,11 +208,6 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c.fkManager = NewForeignKeyManager(c.destDB, c.logger, c.config.NoTimeouts)
 	c.fkStrategy = c.fkManager
 
-	// Initialize persistence (file logger)
-	if err := c.initFileLogger(); err != nil {
-		return nil, fmt.Errorf("failed to initialize file logger: %w", err)
-	}
-
 	// Initialize layered components (can be swapped later)
 	c.discovery = &defaultDiscovery{c: c}
 	c.planner = &defaultPlanner{c: c}
@@ -233,6 +242,11 @@ func (c *Copier) Close() {
 		if err := c.logFile.Close(); err != nil {
 			// Can't use c.logger.Error here since we're closing the log file
 			fmt.Fprintf(os.Stderr, "Failed to close copy.log file: %v\n", err)
+		}
+	}
+	if c.errorLogFile != nil {
+		if err := c.errorLogFile.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to close errors.log file: %v\n", err)
 		}
 	}
 }
@@ -819,6 +833,17 @@ func (c *Copier) initFileLogger() error {
 	return nil
 }
 
+// initErrorLogger initializes the separate error log file (errors.log)
+func (c *Copier) initErrorLogger() error {
+	var err error
+	c.errorLogFile, err = os.OpenFile("errors.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open errors.log file: %w", err)
+	}
+	c.errorLogger = log.New(c.errorLogFile, "", 0)
+	return nil
+}
+
 // logCollectedErrorsToFile flushes all accumulated errors to copy.log
 func (c *Copier) logCollectedErrorsToFile() {
 	if c.fileLogger == nil {
@@ -846,6 +871,34 @@ func (c *Copier) logCollectedErrorsToFile() {
 			ts := te.Timestamp.Format("2006-01-02 15:04:05")
 			c.fileLogger.Printf("%s | TABLE_ERROR | table=%s.%s | %s", ts, t.Schema, t.Name, te.Message)
 		}
+	}
+}
+
+// OnStateChange implements state.Listener to capture error events for errors.log
+func (c *Copier) OnStateChange(_ *state.CopyState, event state.Event) {
+	if event.Type != state.EventErrorAdded || c.errorLogger == nil {
+		return
+	}
+	raw, ok := event.Data["error"]
+	if !ok {
+		return
+	}
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	switch e := raw.(type) {
+	case state.ErrorEntry:
+		table := e.Table
+		if table == "" {
+			table = "-"
+		}
+		c.errorLogger.Printf("%s | ERROR | type=%s | component=%s | table=%s | %s", timestamp, e.Type, e.Component, table, e.Message)
+	case state.TableError:
+		table := event.TableName
+		if table == "" {
+			table = "-"
+		}
+		c.errorLogger.Printf("%s | TABLE_ERROR | type=%s | table=%s | %s", timestamp, e.Type, table, e.Message)
+	default:
+		c.errorLogger.Printf("%s | UNKNOWN_ERROR_EVENT | %+v", timestamp, raw)
 	}
 }
 
