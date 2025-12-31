@@ -59,7 +59,7 @@ const (
 type OperationConfig struct {
 	// Connection settings
 	SourceConn string `json:"sourceConn"`
-	DestConn   string `json:"destConn"`
+	TargetConn string `json:"targetConn"`
 
 	// Operation settings
 	Parallel      int      `json:"parallel"`
@@ -88,10 +88,10 @@ type OperationConfig struct {
 	Snapshot bool `json:"snapshot"`
 }
 
-// ConnectionDetails holds information about source and destination connections
+// ConnectionDetails holds information about source and target connections
 type ConnectionDetails struct {
-	Source      ConnectionInfo `json:"source"`
-	Destination ConnectionInfo `json:"destination"`
+	Source ConnectionInfo `json:"source"`
+	Target ConnectionInfo `json:"target"`
 }
 
 // ConnectionInfo represents connection information
@@ -314,7 +314,7 @@ type Metrics struct {
 
 	// Database metrics
 	SourceConnections int `json:"sourceConnections"`
-	DestConnections   int `json:"destConnections"`
+	TargetConnections int `json:"targetConnections"`
 	ActiveQueries     int `json:"activeQueries"`
 
 	// Network metrics

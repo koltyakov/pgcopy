@@ -17,8 +17,8 @@ See the concise guide at docs/quick-start.md for install, safety, and the 4 comm
 
 ## Common Scenarios
 
-- Refresh staging from prod: `pgcopy copy --source "postgres://user:pass@prod:5432/db" --dest "postgres://user:pass@staging:5432/db"`
-- Migrate hosts (data-only): `pgcopy copy --source "postgres://user:pass@old:5432/db" --dest "postgres://user:pass@new:5432/db"`
+- Refresh staging from prod: `pgcopy copy --source "postgres://user:pass@prod:5432/db" --target "postgres://user:pass@staging:5432/db"`
+- Migrate hosts (data-only): `pgcopy copy --source "postgres://user:pass@old:5432/db" --target "postgres://user:pass@new:5432/db"`
 - Copy subset: `--include "public.users,public.orders,public.products"`
 - Speed up over WAN: `--parallel 8 --copy-pipe --compress`
 - Web dashboard: `--output web`
@@ -79,12 +79,12 @@ Start with [docs/quick-start.md](docs/quick-start.md). For patterns and flags:
 
 ### `copy`
 
-Copy data from source to destination database.
+Copy data from source to target database.
 
 **Flags:**
 
 - `--source, -s`: Source database connection string
-- `--dest, -d`: Destination database connection string
+- `--target, -t`: Target database connection string
 - `--parallel, -p`: Number of parallel workers (default: 4)
 - `--batch-size`: Batch size for data copying (default: 1000)
 - `--exclude`: Tables to exclude from copying (comma-separated, supports wildcards: `temp_*,*_logs`)
@@ -92,7 +92,7 @@ Copy data from source to destination database.
 - `--dry-run`: Show what would be copied without actually copying
 - `--skip-backup`: Skip confirmation dialog for data overwrite (use with caution)
 - `--output, -o`: Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web dashboard)
-- `--copy-pipe`: Use streaming COPY pipeline (source→dest) instead of row fetch + insert
+- `--copy-pipe`: Use streaming COPY pipeline (source→target) instead of row fetch + insert
 - `--compress`: Gzip-compress streaming COPY pipeline (requires `--copy-pipe`)
 - `--exact-rows`: Compute exact source row counts with `COUNT(*)` during discovery to avoid bad estimates after TRUNCATE (slower on large tables)
 - `--no-timeouts`: Disable internal operation timeouts (use with caution; operations may wait indefinitely)

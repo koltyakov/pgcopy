@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -55,26 +56,79 @@ func findAvailablePort(startPort int) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
+// ShutdownInfo provides context for graceful shutdown decisions.
+type ShutdownInfo interface {
+	// HasVitalOperations returns true if there are operations that need graceful completion
+	// (e.g., FK restoration after copy has started).
+	HasVitalOperations() bool
+}
+
+// setupTwoPhaseShutdown sets up signal handling with two-phase shutdown.
+// First signal: graceful shutdown, attempts to finish vital operations (FK restore).
+// Second signal: force quit immediately.
+// If info is provided and HasVitalOperations() returns false, exits immediately on first signal.
+// Returns a channel that receives true on first signal (graceful shutdown requested).
+func setupTwoPhaseShutdown(cancel context.CancelFunc, info ShutdownInfo) <-chan struct{} {
+	shutdownChan := make(chan struct{}, 1)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	var shutdownRequested atomic.Bool
+
+	go func() {
+		for sig := range sigChan {
+			if shutdownRequested.CompareAndSwap(false, true) {
+				// First signal: check if there are vital operations
+				hasVital := info != nil && info.HasVitalOperations()
+
+				if hasVital {
+					fmt.Printf("\n⏹️  Shutdown requested (%v). Finishing vital operations...\n", sig)
+					fmt.Printf("   Press Ctrl-C again to force quit immediately.\n")
+					cancel()
+					select {
+					case shutdownChan <- struct{}{}:
+					default:
+					}
+				} else {
+					fmt.Printf("\n⏹️  Cancelled.\n")
+					os.Exit(0)
+				}
+			} else {
+				// Second signal: force quit
+				fmt.Printf("\n⚠️  Force quit requested. Exiting immediately.\n")
+				os.Exit(1)
+			}
+		}
+	}()
+
+	return shutdownChan
+}
+
 // copyCmd represents the copy command
 var copyCmd = &cobra.Command{
 	Use:   "copy",
-	Short: "Copy data from source to destination database",
-	Long: `Copy data from source PostgreSQL database to destination PostgreSQL database.
+	Short: "Copy data from source to target database",
+	Long: `Copy data from source PostgreSQL database to target PostgreSQL database.
 Both databases must have the same schema structure.
 
 Examples:
-  pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --dest "postgres://user:pass@localhost:5433/destdb"
-  pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --batch-size 5000
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output plain       # Plain mode for CI/headless (default)
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output progress    # Progress bar mode
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output interactive # Interactive mode with live table progress
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output web         # Web interface mode with real-time monitoring
-  pgcopy copy -s "..." -d "..." --exclude "temp_*,*_logs,*_cache"        # Exclude with wildcards
-  pgcopy copy -s "..." -d "..." --include "user_*,order_*"               # Include with wildcards`,
+  pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --target "postgres://user:pass@localhost:5433/targetdb"
+  pgcopy copy -s "postgres://user:pass@host1/db1" -t "postgres://user:pass@host2/db2" --parallel 4
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --batch-size 5000
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output plain       # Plain mode for CI/headless (default)
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output progress    # Progress bar mode
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output interactive # Interactive mode with live table progress
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output web         # Web interface mode with real-time monitoring
+  pgcopy copy -s "..." -t "..." --exclude "temp_*,*_logs,*_cache"        # Exclude with wildcards
+  pgcopy copy -s "..." -t "..." --include "user_*,order_*"               # Include with wildcards`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
-		destConn, _ := cmd.Flags().GetString("dest")
+		// Support both --target (new) and --dest (deprecated, hidden)
+		targetConn, _ := cmd.Flags().GetString("target")
+		deprecatedDest, _ := cmd.Flags().GetString("dest")
+		if targetConn == "" && deprecatedDest != "" {
+			targetConn = deprecatedDest
+		}
 		parallel, _ := cmd.Flags().GetInt("parallel")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
 		excludeTables, _ := cmd.Flags().GetStringSlice("exclude")
@@ -82,11 +136,15 @@ Examples:
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		skipBackup, _ := cmd.Flags().GetBool("skip-backup")
 		output, _ := cmd.Flags().GetString("output")
-		useCopyPipe, _ := cmd.Flags().GetBool("copy-pipe")
+		legacyBulk, _ := cmd.Flags().GetBool("legacy-bulk")
 		compressPipe, _ := cmd.Flags().GetBool("compress")
 		exactRows, _ := cmd.Flags().GetBool("exact-rows")
 		noTimeouts, _ := cmd.Flags().GetBool("no-timeouts")
 		snapshot, _ := cmd.Flags().GetBool("snapshot")
+
+		// StreamCopy (COPY protocol) is now the default; use --legacy-bulk to revert
+		useCopyPipe := !legacyBulk
+
 		// Parse display mode
 		var displayMode copier.DisplayMode
 		switch output {
@@ -104,7 +162,7 @@ Examples:
 
 		config := &copier.Config{
 			SourceConn:    sourceConn,
-			DestConn:      destConn,
+			TargetConn:    targetConn,
 			Parallel:      parallel,
 			BatchSize:     batchSize,
 			ExcludeTables: excludeTables,
@@ -147,9 +205,8 @@ Examples:
 			}
 			defer stateCopier.Close()
 
-			// Handle graceful shutdown
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+			// Setup two-phase graceful shutdown (pass copier for vital ops check)
+			shutdownChan := setupTwoPhaseShutdown(cancel, stateCopier)
 
 			// Start copy operation in a goroutine
 			copyDone := make(chan error, 1)
@@ -194,18 +251,18 @@ Examples:
 				}
 				fmt.Printf("\n🎉 Copy operation completed successfully!\n")
 				fmt.Printf("You can close the web interface now.\n")
-			case <-c:
-				fmt.Printf("\n⏹️  Operation cancelled by user\n")
-				// Try to restore foreign keys on graceful shutdown
-				if stateCopier != nil && stateCopier.State() != nil {
-					// Best-effort: create a short-lived context and call cleanup explicitly
-					ctxCancel, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-					_ = ctxCancel
-					// We don’t have direct access to copier internals here; rely on internal cleanup when Close triggers
-					// Close will shutdown the web server; FK restore is handled in copier cleanup after Copy returns.
-					// Since we interrupted, proactively call Close to ensure web server stops.
-					stateCopier.Close()
-					cancel2()
+			case <-shutdownChan:
+				// Graceful shutdown: wait for copy to finish (which includes FK restoration)
+				// The context is already cancelled, so Copy() should wind down
+				select {
+				case err := <-copyDone:
+					if err != nil {
+						fmt.Printf("Copy operation ended with error: %v\n", err)
+					} else {
+						fmt.Printf("Graceful shutdown completed.\n")
+					}
+				case <-time.After(30 * time.Second):
+					fmt.Printf("Timeout waiting for graceful shutdown.\n")
 				}
 				return
 			}
@@ -218,9 +275,8 @@ Examples:
 			}
 			defer dataCopier.Close()
 
-			// Graceful shutdown: cancel ctx on SIGINT/SIGTERM
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+			// Setup two-phase graceful shutdown (pass copier for vital ops check)
+			shutdownChan := setupTwoPhaseShutdown(cancel, dataCopier)
 
 			done := make(chan error, 1)
 			go func() { done <- dataCopier.Copy(ctx) }()
@@ -231,10 +287,18 @@ Examples:
 					duration := time.Since(start)
 					log.Fatalf("Copy operation failed after %s: %v", utils.FormatDuration(duration), err)
 				}
-			case <-c:
-				fmt.Printf("\n⏹️  Operation cancelled by user\n")
-				cancel()
-				// dataCopier.Close() will run at defer and cleanup will attempt FK restoration if needed
+			case <-shutdownChan:
+				// Graceful shutdown: wait for copy to finish (which includes FK restoration)
+				select {
+				case err := <-done:
+					if err != nil {
+						fmt.Printf("Copy operation ended with error: %v\n", err)
+					} else {
+						fmt.Printf("Graceful shutdown completed.\n")
+					}
+				case <-time.After(30 * time.Second):
+					fmt.Printf("Timeout waiting for graceful shutdown.\n")
+				}
 				return
 			}
 		}
@@ -245,7 +309,10 @@ func init() {
 	rootCmd.AddCommand(copyCmd)
 
 	copyCmd.Flags().StringP("source", "s", "", "Source database connection string (postgres://user:pass@host:port/dbname)")
-	copyCmd.Flags().StringP("dest", "d", "", "Destination database connection string (postgres://user:pass@host:port/dbname)")
+	copyCmd.Flags().StringP("target", "t", "", "Target database connection string (postgres://user:pass@host:port/dbname)")
+	// Deprecated: --dest is kept for backwards compatibility but hidden from help
+	copyCmd.Flags().StringP("dest", "d", "", "Deprecated: use --target instead")
+	_ = copyCmd.Flags().MarkHidden("dest")
 	copyCmd.Flags().IntP("parallel", "p", 4, "Number of parallel workers")
 	copyCmd.Flags().Int("batch-size", 1000, "Batch size for data copying")
 	copyCmd.Flags().StringSlice("exclude", []string{}, "Tables to exclude from copying (supports wildcards: temp_*,*_logs)")
@@ -253,8 +320,8 @@ func init() {
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("skip-backup", false, "Skip confirmation dialog for data overwrite")
 	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface; auto on :8080 or random)")
-	copyCmd.Flags().Bool("copy-pipe", false, "Use streaming COPY pipeline (source->dest) instead of row fetch + insert")
-	copyCmd.Flags().Bool("compress", false, "Gzip-compress streaming COPY pipeline (requires --copy-pipe)")
+	copyCmd.Flags().Bool("legacy-bulk", false, "Use legacy bulk INSERT mode instead of streaming COPY pipeline (slower but more compatible)")
+	copyCmd.Flags().Bool("compress", false, "Gzip-compress streaming COPY pipeline")
 	copyCmd.Flags().Bool("exact-rows", false, "Use exact row counting (COUNT(*)) during discovery to avoid bad estimates after TRUNCATE; slower on large tables")
 	copyCmd.Flags().Bool("no-timeouts", false, "Disable internal operation timeouts (use with caution; may wait indefinitely)")
 	copyCmd.Flags().Bool("snapshot", false, "Read each table inside a REPEATABLE READ transaction to ensure consistent pagination (avoids missing/duplicate rows if new rows are inserted during copy)")

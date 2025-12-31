@@ -1,4 +1,36 @@
-// Package state provides React-like hooks for state management
+// Package state provides React-like hooks for state management.
+//
+// This package implements a centralized state management system for pgcopy operations,
+// following patterns similar to React hooks. It provides:
+//
+//   - Thread-safe state mutations via mutex-protected hook methods
+//   - State transition validation to catch programming errors
+//   - Event emission for reactive UI updates
+//   - Snapshot generation for consistent state reads
+//
+// # Thread Safety
+//
+// All exported methods are safe for concurrent use. The CopyState struct uses
+// a read-write mutex (sync.RWMutex) to protect all shared state. Writers acquire
+// an exclusive lock, while readers can operate concurrently.
+//
+// # State Transitions
+//
+// Both operation status and table status follow defined state machines:
+//
+// Operation States:
+//
+//	Initializing -> Preparing -> Copying -> Completed
+//	             -> Confirming -> Preparing -> ...
+//	             -> Failed | Cancelled (from any state)
+//
+// Table States:
+//
+//	Pending -> Queued -> Copying -> Completed | Failed | Retrying
+//	        -> Skipped | Cancelled (from any non-terminal state)
+//
+// Invalid transitions are logged but allowed for robustness - this helps identify
+// bugs without breaking functionality in production.
 package state
 
 import (
@@ -8,22 +40,117 @@ import (
 	"time"
 )
 
-// generateID creates a simple unique ID
+// generateID creates a cryptographically random unique identifier.
+//
+// The function generates 8 random bytes (64 bits) and encodes them as hex,
+// resulting in a 16-character string. This provides sufficient uniqueness
+// for internal identifiers while being compact.
+//
+// Note: On crypto/rand failures (extremely rare), returns a timestamp-based
+// fallback ID. This ensures operations can continue even under adverse conditions.
 func generateID() string {
 	bytes := make([]byte, 8)
-	// Intentionally ignoring error - random ID generation failure is not critical
-	_, _ = rand.Read(bytes) // #nosec G104 - error handling not critical for ID generation
+	n, err := rand.Read(bytes)
+	if err != nil || n != 8 {
+		// Fallback to timestamp-based ID if crypto/rand fails
+		// This is extremely rare but we must handle it
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
 	return hex.EncodeToString(bytes)
 }
 
-// Hook methods for updating state (React-like API)
+// validOperationTransitions defines allowed state transitions for operations.
+//
+// This state machine prevents invalid transitions that could indicate:
+//   - Race conditions in concurrent code
+//   - Logic errors in control flow
+//   - External interference with state
+//
+// Terminal states (Completed, Failed, Cancelled) have no outgoing transitions.
+// Any attempt to transition from a terminal state is logged as a warning.
+var validOperationTransitions = map[OperationStatus][]OperationStatus{
+	StatusInitializing: {StatusPreparing, StatusConfirming, StatusFailed, StatusCancelled},
+	StatusConfirming:   {StatusPreparing, StatusCancelled},
+	StatusPreparing:    {StatusCopying, StatusCompleted, StatusFailed, StatusCancelled},
+	StatusCopying:      {StatusCompleted, StatusFailed, StatusCancelled},
+	StatusCompleted:    {}, // Terminal state - no transitions allowed
+	StatusFailed:       {}, // Terminal state - no transitions allowed
+	StatusCancelled:    {}, // Terminal state - no transitions allowed
+}
 
-// SetStatus updates the operation status
+// validTableTransitions defines allowed state transitions for individual tables.
+//
+// Tables follow a similar state machine to operations but allow retries from
+// the Failed state. This enables resilient copying with automatic retry logic.
+var validTableTransitions = map[TableStatus][]TableStatus{
+	TableStatusPending:   {TableStatusQueued, TableStatusCopying, TableStatusSkipped, TableStatusCancelled},
+	TableStatusQueued:    {TableStatusCopying, TableStatusSkipped, TableStatusCancelled},
+	TableStatusCopying:   {TableStatusCompleted, TableStatusFailed, TableStatusRetrying, TableStatusCancelled},
+	TableStatusRetrying:  {TableStatusCopying, TableStatusFailed, TableStatusCancelled},
+	TableStatusCompleted: {},                    // Terminal state
+	TableStatusFailed:    {TableStatusRetrying}, // Can retry from failed
+	TableStatusSkipped:   {},                    // Terminal state
+	TableStatusCancelled: {},                    // Terminal state
+}
+
+// isValidOperationTransition checks if transitioning from old to new status is valid.
+//
+// Returns true if the transition is allowed according to validOperationTransitions.
+// Returns false for unknown states or disallowed transitions.
+func isValidOperationTransition(old, new OperationStatus) bool {
+	allowed, exists := validOperationTransitions[old]
+	if !exists {
+		// Unknown state - should never happen in production
+		return false
+	}
+	for _, s := range allowed {
+		if s == new {
+			return true
+		}
+	}
+	return false
+}
+
+// isValidTableTransition checks if transitioning from old to new status is valid.
+//
+// Returns true if the transition is allowed according to validTableTransitions.
+// Returns false for unknown states or disallowed transitions.
+func isValidTableTransition(old, new TableStatus) bool {
+	allowed, exists := validTableTransitions[old]
+	if !exists {
+		// Unknown state - should never happen in production
+		return false
+	}
+	for _, s := range allowed {
+		if s == new {
+			return true
+		}
+	}
+	return false
+}
+
+// Hook methods for updating state (React-like API)
+// All hook methods are thread-safe and emit events for reactive updates.
+
+// SetStatus updates the operation status with state transition validation.
+//
+// Thread Safety: Acquires exclusive lock during state modification.
+// Events: Emits EventOperationStarted, EventOperationCompleted, or EventOperationFailed.
+//
+// Invalid transitions are logged but allowed for robustness.
 func (s *CopyState) SetStatus(status OperationStatus) {
 	var event Event
 
 	s.mu.Lock()
 	oldStatus := s.Status
+
+	// Validate state transition
+	if oldStatus != status && !isValidOperationTransition(oldStatus, status) {
+		// Log warning but allow transition for robustness
+		// This helps identify bugs without breaking functionality
+		fmt.Printf("Warning: Invalid operation state transition: %s -> %s\n", oldStatus, status)
+	}
+
 	s.Status = status
 
 	if status == StatusCompleted || status == StatusFailed || status == StatusCancelled {
@@ -88,6 +215,13 @@ func (s *CopyState) UpdateTableStatus(schema, name string, status TableStatus) {
 
 	table := &s.Tables[tableIndex]
 	oldStatus := table.Status
+
+	// Validate state transition
+	if oldStatus != status && !isValidTableTransition(oldStatus, status) {
+		// Log warning but allow transition for robustness
+		fmt.Printf("Warning: Invalid table state transition for %s.%s: %s -> %s\n", schema, name, oldStatus, status)
+	}
+
 	table.Status = status
 
 	now := time.Now()
@@ -392,10 +526,10 @@ func (s *CopyState) UpdateConnectionDetails(connType, display string, status Con
 		s.Connections.Source.Display = display
 		s.Connections.Source.Status = status
 		s.Connections.Source.LastPing = &now
-	case "destination":
-		s.Connections.Destination.Display = display
-		s.Connections.Destination.Status = status
-		s.Connections.Destination.LastPing = &now
+	case "target":
+		s.Connections.Target.Display = display
+		s.Connections.Target.Status = status
+		s.Connections.Target.LastPing = &now
 	}
 }
 

@@ -24,13 +24,13 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 		}
 	}()
 
-	dstConn, err := pgx.Connect(ctx, c.config.DestConn)
+	dstConn, err := pgx.Connect(ctx, c.config.TargetConn)
 	if err != nil {
-		return fmt.Errorf("pgx connect dest: %w", err)
+		return fmt.Errorf("pgx connect target: %w", err)
 	}
 	defer func() {
 		if cerr := dstConn.Close(ctx); cerr != nil {
-			c.logger.Warn("Error closing destination pgx connection: %v", cerr)
+			c.logger.Warn("Error closing target pgx connection: %v", cerr)
 		}
 	}()
 
@@ -73,6 +73,12 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 
 	// Writer goroutine: source -> (optional gzip) -> pipe
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Error("Stream copy writer goroutine panicked: %v", r)
+				pw.CloseWithError(fmt.Errorf("writer panic: %v", r))
+			}
+		}()
 		defer func() { _ = pw.Close() }()
 		var w io.Writer = pw
 		var gz *gzip.Writer
@@ -114,9 +120,14 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	// or no row is visible, the poller exits quietly.
 	stopPoll := make(chan struct{})
 	go func(schema, name string, pid uint32, _ int64) {
+		defer func() {
+			if r := recover(); r != nil {
+				c.logger.Error("Progress poller goroutine panicked: %v", r)
+			}
+		}()
 		progCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		conn, err := pgx.Connect(progCtx, c.config.DestConn)
+		conn, err := pgx.Connect(progCtx, c.config.TargetConn)
 		if err != nil {
 			// Can't poll, just return silently
 			return

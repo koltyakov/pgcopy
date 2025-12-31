@@ -2,6 +2,7 @@ package copier
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +46,13 @@ func (d *InteractiveDisplay) Start() {
 
 	// Start update loop
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Restore cursor on panic
+				fmt.Print("\033[?25h")
+				fmt.Fprintf(os.Stderr, "Interactive display panicked: %v\n", r)
+			}
+		}()
 		ticker := time.NewTicker(100 * time.Millisecond) // Update 10 times per second
 		defer ticker.Stop()
 

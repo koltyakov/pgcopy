@@ -16,14 +16,14 @@ pgcopy truncates destination tables before loading data. Read the short guide: d
 ## The essentials
 
 - Dry run (preview only)
-  - `pgcopy copy --source "postgres://user:pass@src:5432/db" --dest "postgres://user:pass@dst:5432/db" --dry-run`
+  - `pgcopy copy --source "postgres://user:pass@src:5432/db" --target "postgres://user:pass@dst:5432/db" --dry-run`
 - Run with confirmation
-  - `pgcopy copy --source "postgres://user:pass@src:5432/db" --dest "postgres://user:pass@dst:5432/db"`
+  - `pgcopy copy --source "postgres://user:pass@src:5432/db" --target "postgres://user:pass@dst:5432/db"`
 
 ## Go faster (network-bound)
 
 - Add streaming COPY with gzip compression:
-  - `pgcopy copy --source "postgres://..." --dest "postgres://..." --parallel 8 --copy-pipe --compress`
+  - `pgcopy copy --source "postgres://..." --target "postgres://..." --parallel 8 --copy-pipe --compress`
 - Notes:
   - `--compress` requires `--copy-pipe`
   - Progress is reported per-table at completion when streaming
@@ -31,9 +31,9 @@ pgcopy truncates destination tables before loading data. Read the short guide: d
 ## Copy only what you need
 
 - Include a subset
-  - `pgcopy copy --source "..." --dest "..." --include "public.users,public.orders,public.products"`
+  - `pgcopy copy --source "..." --target "..." --include "public.users,public.orders,public.products"`
 - Exclude by wildcards
-  - `pgcopy copy --source "..." --dest "..." --exclude "temp_*,*_logs,*_cache"`
+  - `pgcopy copy --source "..." --target "..." --exclude "temp_*,*_logs,*_cache"`
 
 See docs/wildcards.md for patterns.
 
@@ -46,7 +46,7 @@ See docs/wildcards.md for patterns.
 By default, row counts are estimated (fast). If tables were recently truncated, estimates can be misleading.
 Use `--exact-rows` to compute precise counts with COUNT(*):
 
-- `pgcopy copy --source "..." --dest "..." --exact-rows`
+- `pgcopy copy --source "..." --target "..." --exact-rows`
 
 Note: this can be slower on very large tables.
 

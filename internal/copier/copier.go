@@ -1,11 +1,43 @@
 // Package copier provides functionality for copying data between PostgreSQL databases.
-// It handles table discovery, foreign key management, parallel copying, and progress tracking.
+//
+// It implements a robust, parallel data migration system that handles:
+//   - Automatic table discovery and dependency ordering
+//   - Foreign key constraint management (drop/restore or replica mode)
+//   - Parallel worker pool with configurable concurrency
+//   - Progress tracking with multiple display modes
+//   - Graceful shutdown and error recovery
+//
+// # Thread Safety
+//
+// The Copier struct uses a centralized state management system (state.CopyState)
+// that provides thread-safe operations. Worker goroutines communicate through
+// channels and the shared state system.
+//
+// # Error Handling
+//
+// Errors are categorized and handled appropriately:
+//   - Fatal errors: Connection failures, invalid configuration
+//   - Recoverable errors: Individual table copy failures (continue with other tables)
+//   - Transient errors: Network timeouts (retry with exponential backoff)
+//
+// # Resource Management
+//
+// The Copier properly manages database connections, file handles, and goroutines.
+// Always call Close() when done to release resources:
+//
+//	copier, err := New(config)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer copier.Close()
+//	err = copier.Copy(ctx)
 package copier
 
 import (
 	"bufio"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -61,7 +93,99 @@ func (c *Copier) getDisplayMode() DisplayMode {
 // Config is a type alias for state.OperationConfig for backward compatibility
 type Config = state.OperationConfig
 
-// Copier handles the data copying operation using centralized state management
+// connectWithRetry attempts to connect to a database with exponential backoff.
+//
+// This function implements resilient connection establishment to handle:
+//   - Transient network failures
+//   - Database startup delays
+//   - Load balancer warm-up time
+//
+// The backoff schedule is: 1s, 2s, 4s (exponential with base 2).
+// After maxAttempts failures, returns the last error encountered.
+//
+// Parameters:
+//   - driverName: The database driver name (e.g., "pgx")
+//   - connStr: PostgreSQL connection string
+//   - maxAttempts: Maximum number of connection attempts (must be >= 1)
+//
+// Returns:
+//   - *sql.DB: Open database connection pool, or nil on failure
+//   - error: Last error encountered, or nil on success
+//
+// Thread Safety: Safe for concurrent calls (creates independent connections).
+func connectWithRetry(driverName, connStr string, maxAttempts int) (*sql.DB, error) {
+	// Input validation
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if driverName == "" {
+		return nil, fmt.Errorf("driver name cannot be empty")
+	}
+	if connStr == "" {
+		return nil, fmt.Errorf("connection string cannot be empty")
+	}
+
+	var db *sql.DB
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		db, lastErr = sql.Open(driverName, connStr)
+		if lastErr != nil {
+			if attempt < maxAttempts {
+				backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+				time.Sleep(backoff)
+				continue
+			}
+			return nil, fmt.Errorf("failed to open connection after %d attempts: %w", maxAttempts, lastErr)
+		}
+
+		// Verify the connection is actually working
+		lastErr = db.Ping()
+		if lastErr == nil {
+			return db, nil
+		}
+
+		// Close the failed connection before retry
+		_ = db.Close()
+
+		if attempt < maxAttempts {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+			time.Sleep(backoff)
+		}
+	}
+
+	return nil, fmt.Errorf("failed to connect after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// Copier handles the data copying operation using centralized state management.
+//
+// Copier orchestrates the entire data migration process:
+//   - Discovering tables and their metadata from the source database
+//   - Managing foreign key constraints (drop/restore or replica mode)
+//   - Coordinating parallel worker goroutines for data copying
+//   - Tracking progress and emitting updates to display components
+//
+// # Lifecycle
+//
+// Create a Copier with New() or NewWithState(), then call Copy() to execute.
+// Always call Close() when finished to release database connections and files.
+//
+// # Configuration
+//
+// The Copier behavior is controlled by state.OperationConfig:
+//   - Parallel: Number of concurrent worker goroutines (default: CPU cores)
+//   - BatchSize: Rows per INSERT batch (affects memory and performance)
+//   - IncludeTables/ExcludeTables: Table filtering (supports wildcards)
+//   - DryRun: Validate without modifying destination
+//
+// # Error Recovery
+//
+// Individual table failures don't stop the entire operation. Failed tables
+// are tracked in state and reported at completion. Foreign keys are restored
+// even on partial failure.
+//
+// Thread Safety: The Copier itself is not safe for concurrent Copy() calls.
+// Use separate Copier instances for concurrent operations.
 type Copier struct {
 	config             *state.OperationConfig
 	sourceDB           *sql.DB
@@ -135,6 +259,24 @@ func (c *Copier) State() *state.CopyState {
 	return c.state
 }
 
+// HasVitalOperations returns true if there are operations in progress that require
+// graceful shutdown (e.g., FK restoration after copy has started).
+// This is used by the CLI to determine shutdown behavior.
+func (c *Copier) HasVitalOperations() bool {
+	if c.state == nil {
+		return false
+	}
+	snap := c.state.GetSnapshot()
+	// Vital operations exist once we've moved past the confirmation phase
+	// (preparing, copying) because FKs may have been dropped.
+	switch snap.Status {
+	case state.StatusPreparing, state.StatusCopying:
+		return true
+	default:
+		return false
+	}
+}
+
 // NewWithState creates a new Copier instance with an existing state
 func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c := &Copier{
@@ -160,46 +302,40 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	// Subscribe copier itself as a listener to capture error events
 	c.state.Subscribe(c)
 
-	// Connect to source database using pgx stdlib driver
+	// Connect to source database with retry (handles transient network failures)
 	sourceConnStr := config.SourceConn
-	c.sourceDB, err = sql.Open("pgx", sourceConnStr)
+	c.sourceDB, err = connectWithRetry("pgx", sourceConnStr, 3)
 	if err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to source: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to connect to source database: %w", err)
-	}
-	if err = c.sourceDB.Ping(); err != nil {
-		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping source: %v", err), "copier", true, nil)
-		return nil, fmt.Errorf("failed to ping source database: %w", err)
 	}
 
 	// Update source connection state
 	sourceDetails := utils.ExtractConnectionDetails(sourceConnStr)
 	c.state.UpdateConnectionDetails("source", sourceDetails, state.ConnectionStatusConnected)
 
-	// Connect to destination database using pgx stdlib driver
-	destConnStr := config.DestConn
-	c.destDB, err = sql.Open("pgx", destConnStr)
+	// Connect to target database with retry (handles transient network failures)
+	targetConnStr := config.TargetConn
+	c.destDB, err = connectWithRetry("pgx", targetConnStr, 3)
 	if err != nil {
-		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to dest: %v", err), "copier", true, nil)
-		return nil, fmt.Errorf("failed to connect to destination database: %w", err)
-	}
-	if err = c.destDB.Ping(); err != nil {
-		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping dest: %v", err), "copier", true, nil)
-		return nil, fmt.Errorf("failed to ping destination database: %w", err)
+		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to target: %v", err), "copier", true, nil)
+		return nil, fmt.Errorf("failed to connect to target database: %w", err)
 	}
 
-	// Update destination connection state
-	destDetails := utils.ExtractConnectionDetails(destConnStr)
-	c.state.UpdateConnectionDetails("destination", destDetails, state.ConnectionStatusConnected)
+	// Update target connection state
+	targetDetails := utils.ExtractConnectionDetails(targetConnStr)
+	c.state.UpdateConnectionDetails("target", targetDetails, state.ConnectionStatusConnected)
 
 	// Configure connection pools for performance (database/sql)
 	c.sourceDB.SetMaxOpenConns(config.Parallel * 2)
 	c.sourceDB.SetMaxIdleConns(config.Parallel)
 	c.sourceDB.SetConnMaxLifetime(time.Hour)
+	c.sourceDB.SetConnMaxIdleTime(5 * time.Minute) // Release idle connections during long operations
 
 	c.destDB.SetMaxOpenConns(config.Parallel * 2)
 	c.destDB.SetMaxIdleConns(config.Parallel)
 	c.destDB.SetConnMaxLifetime(time.Hour)
+	c.destDB.SetConnMaxIdleTime(5 * time.Minute) // Release idle connections during long operations
 
 	// Initialize utils logger first
 	c.logger = utils.NewSilentLogger()
@@ -253,8 +389,6 @@ func (c *Copier) Close() {
 
 // Copy performs the data copying operation
 func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored into helpers
-	// Status: preparing
-	c.state.SetStatus(state.StatusPreparing)
 	c.state.AddLog(state.LogLevelInfo, "Starting copy operation", "copier", "", nil)
 
 	// 1. Discovery
@@ -282,13 +416,17 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored
 	// Add planned tables to state and compute totals
 	totalRows := c.addPlannedTablesToState(planned)
 
-	// Optional confirmation
+	// Optional confirmation (status: confirming - safe to exit immediately)
 	if !c.config.SkipBackup && !c.config.DryRun {
+		c.state.SetStatus(state.StatusConfirming)
 		if !c.confirmDataOverwrite(planned, totalRows) { // reuse existing prompt
 			fmt.Println("Operation cancelled by user.")
 			return nil
 		}
 	}
+
+	// Status: preparing (vital operations begin - FK may be dropped)
+	c.state.SetStatus(state.StatusPreparing)
 
 	// Persistence: start log
 	c.startCopyLog(len(planned), totalRows)
@@ -311,17 +449,27 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored
 
 	// Execution
 	err = c.runExecution(ctx, planned)
+
+	// FK cleanup (always try to restore FKs)
+	c.cleanupForeignKeys()
+
+	// Handle execution result
 	if err != nil {
+		// Check if this was a graceful shutdown (context cancelled)
+		if errors.Is(err, context.Canceled) {
+			c.state.SetStatus(state.StatusCancelled)
+			c.state.AddLog(state.LogLevelInfo, "Copy operation cancelled by user", "copier", "", nil)
+			c.finishDisplays()
+			return nil // Not an error - graceful shutdown
+		}
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("copy_error", fmt.Sprintf("Copy operation failed: %v", err), "copier", true, nil)
 		if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
 			c.waitForWebAckOnFailure()
 		}
-		// Do not stop interactive display here; allow normal finalization below.
+		c.finishDisplays()
+		return err
 	}
-
-	// FK cleanup
-	c.cleanupForeignKeys()
 
 	// Completion
 	c.state.SetStatus(state.StatusCompleted)
@@ -787,8 +935,8 @@ func ValidateConfig(config *Config) error {
 	if config.SourceConn == "" {
 		return fmt.Errorf("%w: --source connection string must be provided", utils.ErrInvalidConfig)
 	}
-	if config.DestConn == "" {
-		return fmt.Errorf("%w: --dest connection string must be provided", utils.ErrInvalidConfig)
+	if config.TargetConn == "" {
+		return fmt.Errorf("%w: --target connection string must be provided", utils.ErrInvalidConfig)
 	}
 	if config.Parallel < 1 {
 		return fmt.Errorf("%w: parallel workers must be at least 1", utils.ErrInvalidConfig)
@@ -1111,9 +1259,9 @@ func (c *Copier) promptYes() bool {
 
 // getConnectionDisplay extracts and formats connection details for display
 func (c *Copier) getConnectionDisplay() string {
-	// Get the actual destination connection string
-	destConn := c.config.DestConn
+	// Get the actual target connection string
+	targetConn := c.config.TargetConn
 
 	// Extract connection details from the connection string
-	return utils.ExtractConnectionDetails(destConn)
+	return utils.ExtractConnectionDetails(targetConn)
 }

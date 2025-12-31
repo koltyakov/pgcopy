@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -13,15 +14,237 @@ import (
 	"github.com/koltyakov/pgcopy/internal/utils"
 )
 
-// Default operation timeouts
+// Default operation timeouts.
+//
+// These timeouts balance responsiveness with allowing large operations to complete.
+// They can be overridden by setting config.NoTimeouts = true for operations that
+// require extended time (e.g., very large tables, slow networks).
+//
+// Each timeout is chosen based on operational experience:
+//   - truncateTimeout: 30s allows for large table cleanup with index maintenance
+//   - selectTimeout: 2min allows for complex queries with sequential scans
+//   - txnTimeout: 2min allows for large batch inserts within a transaction
 const (
+	// truncateTimeout is the maximum time allowed for TRUNCATE TABLE operations.
+	// Larger tables may take longer if triggers or FK checks are involved.
 	truncateTimeout = 30 * time.Second
-	selectTimeout   = 2 * time.Minute
-	txnTimeout      = 2 * time.Minute
+
+	// selectTimeout is the maximum time for SELECT queries during batch reads.
+	// Complex queries or cold caches may require the full timeout.
+	selectTimeout = 2 * time.Minute
+
+	// txnTimeout is the maximum time for transaction-scoped operations.
+	// This includes batch inserts and related constraint checking.
+	txnTimeout = 2 * time.Minute
 )
 
-// copyTablesParallel copies tables using parallel workers
+// rowBufferPool provides reusable row buffers to reduce GC pressure during scanning.
+//
+// During high-throughput data copying, the scanner allocates a []any slice for each
+// row to receive column values. Without pooling, this creates significant garbage
+// collection overhead.
+//
+// This pool stores *[]any pointers (pointer to slice) because:
+//  1. sync.Pool stores interface{} values - storing slices directly would cause allocations
+//  2. Storing pointers allows us to resize the underlying slice without re-pooling
+//
+// Usage pattern:
+//
+//	buf := getRowBuffer(numCols)
+//	defer putRowBuffer(buf)
+//	err := rows.Scan(buf...)
+//
+// Thread Safety: sync.Pool is safe for concurrent use.
+var rowBufferPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate a reasonable initial capacity to reduce early reallocations.
+		// 64 columns covers most table schemas; larger tables will resize as needed.
+		slice := make([]any, 0, 64)
+		return &slice
+	},
+}
+
+// getRowBuffer retrieves a row buffer from the pool, resized to numCols.
+//
+// The returned slice is guaranteed to have length == numCols with all elements
+// set to nil (safe for sql.Rows.Scan).
+//
+// Parameters:
+//   - numCols: Number of columns to scan (must be >= 0)
+//
+// Returns: A slice of length numCols ready for scanning.
+//
+// The caller MUST call putRowBuffer when done to return the buffer to the pool.
+func getRowBuffer(numCols int) []any {
+	// Defensive: handle invalid input
+	if numCols < 0 {
+		numCols = 0
+	}
+
+	buf := rowBufferPool.Get().(*[]any)
+	if cap(*buf) < numCols {
+		// Grow capacity if needed - allocate with some headroom
+		*buf = make([]any, numCols, numCols*2)
+	} else {
+		*buf = (*buf)[:numCols]
+	}
+
+	// Clear the slice - critical for correct scanning behavior.
+	// sql.Rows.Scan expects nil interface{} values or properly typed pointers.
+	for i := range *buf {
+		(*buf)[i] = nil
+	}
+	return *buf
+}
+
+// putRowBuffer returns a row buffer to the pool.
+//
+// The buffer is cleared before returning to allow GC of referenced values.
+// This prevents memory leaks from large scanned values being retained in pooled buffers.
+//
+// Parameters:
+//   - buf: The buffer slice to return (may be nil - no-op)
+func putRowBuffer(buf []any) {
+	if buf == nil {
+		return
+	}
+
+	// Clear references to allow GC of scanned values.
+	// This is critical - without clearing, large values could be retained indefinitely.
+	for i := range buf {
+		buf[i] = nil
+	}
+	rowBufferPool.Put(&buf)
+}
+
+// stringBuilderPool provides reusable string builders to reduce GC pressure during INSERT statement construction.
+//
+// Building INSERT statements involves significant string concatenation. Without pooling, each batch
+// creates and discards a strings.Builder, causing GC overhead.
+//
+// Thread Safety: sync.Pool is safe for concurrent use.
+var stringBuilderPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate reasonable capacity for typical INSERT statements.
+		// Average INSERT: ~50 bytes header + (numCols * 5 bytes per placeholder) * numRows
+		sb := &strings.Builder{}
+		sb.Grow(65536) // 64KB initial capacity covers most batches
+		return sb
+	},
+}
+
+// getStringBuilder retrieves a string builder from the pool, reset and ready to use.
+func getStringBuilder() *strings.Builder {
+	sb := stringBuilderPool.Get().(*strings.Builder)
+	sb.Reset()
+	return sb
+}
+
+// putStringBuilder returns a string builder to the pool.
+func putStringBuilder(sb *strings.Builder) {
+	if sb == nil {
+		return
+	}
+	// Only pool builders that haven't grown too large (avoid memory hoarding)
+	if sb.Cap() <= 1<<20 { // 1MB limit
+		stringBuilderPool.Put(sb)
+	}
+}
+
+// placeholderCache stores pre-computed placeholder integer strings for fast lookup.
+// Avoids strconv.Itoa allocations for common parameter numbers.
+var placeholderInts = func() []string {
+	// Pre-compute strings for parameters 1-65535 (PostgreSQL max)
+	// This uses ~1MB of memory but eliminates allocations in the hot path.
+	const maxParams = 65536
+	strs := make([]string, maxParams)
+	for i := range strs {
+		strs[i] = strconv.Itoa(i)
+	}
+	return strs
+}()
+
+// itoa returns a string representation of n without allocation for common values.
+func itoa(n int) string {
+	if n >= 0 && n < len(placeholderInts) {
+		return placeholderInts[n]
+	}
+	return strconv.Itoa(n)
+}
+
+// buildValuesClause constructs the VALUES clause for a multi-row INSERT efficiently.
+// Uses pre-allocated integer strings to avoid allocations in the hot loop.
+//
+// Parameters:
+//   - sb: string builder to write to (should be reset before calling)
+//   - numCols: number of columns per row
+//   - numRows: number of rows to include
+//   - startParam: starting parameter number (usually 1)
+//
+// Returns the next parameter number after the last placeholder.
+func buildValuesClause(sb *strings.Builder, numCols, numRows, startParam int) int {
+	param := startParam
+	for row := 0; row < numRows; row++ {
+		if row > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteByte('(')
+		for col := 0; col < numCols; col++ {
+			if col > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteByte('$')
+			sb.WriteString(itoa(param))
+			param++
+		}
+		sb.WriteByte(')')
+	}
+	return param
+}
+
+// copyTablesParallel copies tables using parallel workers.
+//
+// This function implements a worker pool pattern:
+//  1. Creates N worker goroutines (N = config.Parallel)
+//  2. Distributes tables to workers via a buffered channel
+//  3. Workers process tables independently, reporting errors via errChan
+//  4. Waits for all workers to complete, then collects and returns errors
+//
+// # Error Handling
+//
+// Individual table failures don't stop other workers. All errors are collected
+// and returned as a combined error using errors.Join. This allows maximum
+// data migration even with partial failures.
+//
+// # Cancellation
+//
+// Workers check ctx.Done() before each table and abort promptly on cancellation.
+// In-progress table copies will complete their current batch before stopping.
+//
+// # Panic Recovery
+//
+// Each worker has panic recovery to prevent one misbehaving table from
+// crashing the entire operation. Panics are converted to errors.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout
+//   - tables: Slice of tables to copy (must not be nil)
+//
+// Returns:
+//   - error: nil on success, or combined errors from failed tables
+//
+// Thread Safety: Safe to call once per Copier instance (not concurrent-safe).
 func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) error {
+	// Defensive: handle nil or empty input
+	if len(tables) == 0 {
+		return nil
+	}
+
+	// Invariant check: parallel workers must be positive
+	if c.config.Parallel <= 0 {
+		c.config.Parallel = 1 // Safe default
+	}
+
 	// Create a channel for work distribution
 	tableChan := make(chan *TableInfo, len(tables))
 	errChan := make(chan error, c.config.Parallel)
@@ -30,7 +253,15 @@ func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) er
 	// Start worker goroutines
 	for i := 0; i < c.config.Parallel; i++ {
 		wg.Add(1)
-		go c.worker(ctx, tableChan, errChan, &wg)
+		go func(workerID int) {
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("Worker %d panicked: %v", workerID, r)
+					errChan <- fmt.Errorf("worker %d panic: %v", workerID, r)
+				}
+			}()
+			c.worker(ctx, tableChan, errChan, &wg)
+		}(i)
 	}
 
 	// Send tables to workers
@@ -45,18 +276,28 @@ func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) er
 		close(errChan)
 	}()
 
-	// Collect any errors
-	var errors []error
+	// Collect any errors (filter out context cancellation during graceful shutdown)
+	var collectedErrors []error
 	for err := range errChan {
 		if err != nil {
-			errors = append(errors, err)
+			// Skip context.Canceled errors - these are expected during graceful shutdown
+			if errors.Is(err, context.Canceled) {
+				continue
+			}
+			collectedErrors = append(collectedErrors, err)
 			// Use state system for error tracking
 			c.state.AddError("copy_error", err.Error(), "copier", false, nil)
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("%w: encountered %d errors during copy operation", utils.ErrCopyFailures, len(errors))
+	// If context was cancelled (graceful shutdown), don't report errors as failures
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	if len(collectedErrors) > 0 {
+		// Use errors.Join to preserve all error details for debugging
+		return errors.Join(append([]error{fmt.Errorf("%w: encountered %d errors during copy operation", utils.ErrCopyFailures, len(collectedErrors))}, collectedErrors...)...)
 	}
 
 	return nil
@@ -74,8 +315,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		// Check for cancellation before starting
 		select {
 		case <-ctx.Done():
-			errChan <- ctx.Err()
-			return
+			return // Don't send error, just exit - context cancellation is handled at collector level
 		default:
 		}
 
@@ -89,6 +329,11 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
 
 		if err := c.copyTable(ctx, table); err != nil {
+			// Skip logging/reporting errors if context was cancelled (graceful shutdown)
+			if ctx.Err() != nil {
+				c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCancelled)
+				return
+			}
 			c.logger.Error("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
 
@@ -113,8 +358,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		var ok bool
 		select {
 		case <-ctx.Done():
-			errChan <- ctx.Err()
-			return
+			return // Context cancelled, exit gracefully
 		case table, ok = <-tableChan:
 			if !ok { // channel closed
 				return
@@ -135,8 +379,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		for {
 			select {
 			case <-ctx.Done():
-				errChan <- ctx.Err()
-				return
+				return // Context cancelled, exit gracefully
 			case next, ok2 := <-tableChan:
 				if !ok2 { // channel exhausted
 					return
@@ -471,7 +714,8 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error { //
 	return nil
 }
 
-// scanBatch reads all rows of a keyset batch capturing both full row data and last PK tuple
+// scanBatch reads all rows of a keyset batch capturing both full row data and last PK tuple.
+// Uses pooled pointer buffers to reduce allocations in the hot path.
 func (c *Copier) scanBatch(rows *sql.Rows, table *TableInfo) (data [][]any, lastPK []any, err error) {
 	numCols := len(table.Columns)
 	pkIndex := make([]int, len(table.PKColumns))
@@ -483,9 +727,17 @@ func (c *Copier) scanBatch(rows *sql.Rows, table *TableInfo) (data [][]any, last
 			}
 		}
 	}
+
+	// Pre-allocate data slice with estimated capacity to reduce reallocations
+	data = make([][]any, 0, c.config.BatchSize)
+
+	// Get a pooled pointer buffer for scanning
+	ptrs := getRowBuffer(numCols)
+	defer putRowBuffer(ptrs)
+
 	for rows.Next() {
+		// Each row needs its own storage (can't reuse since we keep the data)
 		row := make([]any, numCols)
-		ptrs := make([]any, numCols)
 		for i := range ptrs {
 			ptrs[i] = &row[i]
 		}
@@ -547,32 +799,31 @@ func (c *Copier) insertScannedBatch(ctx context.Context, table *TableInfo, colum
 		maxRowsPerStmt = 1
 	}
 	totalInserted := int64(0)
+
+	// Pre-compute the INSERT header (reused for all chunks)
+	insertHeader := "INSERT INTO " + utils.QuoteTable(table.Schema, table.Name) + " (" + columnList + ") VALUES "
+
+	// Get a pooled string builder for statement construction
+	sb := getStringBuilder()
+	defer putStringBuilder(sb)
+
 	for start := 0; start < len(scanned); start += maxRowsPerStmt {
 		end := min(start+maxRowsPerStmt, len(scanned))
 		chunk := scanned[start:end]
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO ")
-		sb.WriteString(utils.QuoteTable(table.Schema, table.Name))
-		sb.WriteString(" (")
-		sb.WriteString(columnList)
-		sb.WriteString(") VALUES ")
+
+		// Reset builder and construct INSERT statement
+		sb.Reset()
+		sb.WriteString(insertHeader)
+
+		// Build VALUES clause efficiently using pre-allocated integer strings
+		buildValuesClause(sb, numCols, len(chunk), 1)
+
+		// Flatten args: pre-allocate with exact capacity
 		args := make([]any, 0, len(chunk)*numCols)
-		param := 1
-		for i, row := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(")
-			for j := range numCols {
-				if j > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("$%d", param))
-				param++
-				args = append(args, row[j])
-			}
-			sb.WriteString(")")
+		for _, row := range chunk {
+			args = append(args, row...)
 		}
+
 		stmt := sb.String()
 		c.logger.Debug("INSERT (keyset) for %s: %d rows", utils.HighlightTableName(table.Schema, table.Name), len(chunk))
 		if _, err := tx.ExecContext(bctx, stmt, args...); err != nil {
@@ -622,12 +873,16 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 		c.logger.Warn("Could not set synchronous_commit=OFF for bulk insert tx: %v", err)
 	}
 
-	// Pull rows into memory for this batch
-	var scanned [][]any
+	// Pull rows into memory for this batch using pooled pointer buffer
 	numCols := len(table.Columns)
+	scanned := make([][]any, 0, c.config.BatchSize) // Pre-allocate with expected capacity
+
+	// Get a pooled pointer buffer for scanning
+	ptrs := getRowBuffer(numCols)
+	defer putRowBuffer(ptrs)
+
 	for rows.Next() {
 		row := make([]any, numCols)
-		ptrs := make([]any, numCols)
 		for i := range ptrs {
 			ptrs[i] = &row[i]
 		}
@@ -655,36 +910,30 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 		maxRowsPerStmt = 1
 	}
 
+	// Pre-compute the INSERT header (reused for all chunks)
+	insertHeader := "INSERT INTO " + utils.QuoteTable(table.Schema, table.Name) + " (" + columnList + ") VALUES "
+
+	// Get a pooled string builder for statement construction
+	sb := getStringBuilder()
+	defer putStringBuilder(sb)
+
 	totalInserted := int64(0)
 	// Insert in chunks if necessary
 	for start := 0; start < len(scanned); start += maxRowsPerStmt {
 		end := min(start+maxRowsPerStmt, len(scanned))
 		chunk := scanned[start:end]
 
-		// Build placeholders ($1..$n) for chunk
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO ")
-		sb.WriteString(utils.QuoteTable(table.Schema, table.Name))
-		sb.WriteString(" (")
-		sb.WriteString(columnList)
-		sb.WriteString(") VALUES ")
+		// Reset builder and construct INSERT statement
+		sb.Reset()
+		sb.WriteString(insertHeader)
 
+		// Build VALUES clause efficiently using pre-allocated integer strings
+		buildValuesClause(sb, numCols, len(chunk), 1)
+
+		// Flatten args: pre-allocate with exact capacity
 		args := make([]any, 0, len(chunk)*numCols)
-		param := 1
-		for i, row := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(")
-			for j := range numCols {
-				if j > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("$%d", param))
-				param++
-				args = append(args, row[j])
-			}
-			sb.WriteString(")")
+		for _, row := range chunk {
+			args = append(args, row...)
 		}
 
 		stmt := sb.String()
