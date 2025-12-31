@@ -1,5 +1,36 @@
 // Package copier provides functionality for copying data between PostgreSQL databases.
-// It handles table discovery, foreign key management, parallel copying, and progress tracking.
+//
+// It implements a robust, parallel data migration system that handles:
+//   - Automatic table discovery and dependency ordering
+//   - Foreign key constraint management (drop/restore or replica mode)
+//   - Parallel worker pool with configurable concurrency
+//   - Progress tracking with multiple display modes
+//   - Graceful shutdown and error recovery
+//
+// # Thread Safety
+//
+// The Copier struct uses a centralized state management system (state.CopyState)
+// that provides thread-safe operations. Worker goroutines communicate through
+// channels and the shared state system.
+//
+// # Error Handling
+//
+// Errors are categorized and handled appropriately:
+//   - Fatal errors: Connection failures, invalid configuration
+//   - Recoverable errors: Individual table copy failures (continue with other tables)
+//   - Transient errors: Network timeouts (retry with exponential backoff)
+//
+// # Resource Management
+//
+// The Copier properly manages database connections, file handles, and goroutines.
+// Always call Close() when done to release resources:
+//
+//	copier, err := New(config)
+//	if err != nil {
+//	    log.Fatal(err)
+//	}
+//	defer copier.Close()
+//	err = copier.Copy(ctx)
 package copier
 
 import (
@@ -62,8 +93,37 @@ func (c *Copier) getDisplayMode() DisplayMode {
 type Config = state.OperationConfig
 
 // connectWithRetry attempts to connect to a database with exponential backoff.
-// It tries maxAttempts times with delays of 1s, 2s, 4s between attempts.
+//
+// This function implements resilient connection establishment to handle:
+//   - Transient network failures
+//   - Database startup delays
+//   - Load balancer warm-up time
+//
+// The backoff schedule is: 1s, 2s, 4s (exponential with base 2).
+// After maxAttempts failures, returns the last error encountered.
+//
+// Parameters:
+//   - driverName: The database driver name (e.g., "pgx")
+//   - connStr: PostgreSQL connection string
+//   - maxAttempts: Maximum number of connection attempts (must be >= 1)
+//
+// Returns:
+//   - *sql.DB: Open database connection pool, or nil on failure
+//   - error: Last error encountered, or nil on success
+//
+// Thread Safety: Safe for concurrent calls (creates independent connections).
 func connectWithRetry(driverName, connStr string, maxAttempts int) (*sql.DB, error) {
+	// Input validation
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+	if driverName == "" {
+		return nil, fmt.Errorf("driver name cannot be empty")
+	}
+	if connStr == "" {
+		return nil, fmt.Errorf("connection string cannot be empty")
+	}
+
 	var db *sql.DB
 	var lastErr error
 
@@ -96,7 +156,35 @@ func connectWithRetry(driverName, connStr string, maxAttempts int) (*sql.DB, err
 	return nil, fmt.Errorf("failed to connect after %d attempts: %w", maxAttempts, lastErr)
 }
 
-// Copier handles the data copying operation using centralized state management
+// Copier handles the data copying operation using centralized state management.
+//
+// Copier orchestrates the entire data migration process:
+//   - Discovering tables and their metadata from the source database
+//   - Managing foreign key constraints (drop/restore or replica mode)
+//   - Coordinating parallel worker goroutines for data copying
+//   - Tracking progress and emitting updates to display components
+//
+// # Lifecycle
+//
+// Create a Copier with New() or NewWithState(), then call Copy() to execute.
+// Always call Close() when finished to release database connections and files.
+//
+// # Configuration
+//
+// The Copier behavior is controlled by state.OperationConfig:
+//   - Parallel: Number of concurrent worker goroutines (default: CPU cores)
+//   - BatchSize: Rows per INSERT batch (affects memory and performance)
+//   - IncludeTables/ExcludeTables: Table filtering (supports wildcards)
+//   - DryRun: Validate without modifying destination
+//
+// # Error Recovery
+//
+// Individual table failures don't stop the entire operation. Failed tables
+// are tracked in state and reported at completion. Foreign keys are restored
+// even on partial failure.
+//
+// Thread Safety: The Copier itself is not safe for concurrent Copy() calls.
+// Use separate Copier instances for concurrent operations.
 type Copier struct {
 	config             *state.OperationConfig
 	sourceDB           *sql.DB

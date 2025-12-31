@@ -13,33 +13,83 @@ import (
 	"github.com/koltyakov/pgcopy/internal/utils"
 )
 
-// Default operation timeouts
+// Default operation timeouts.
+//
+// These timeouts balance responsiveness with allowing large operations to complete.
+// They can be overridden by setting config.NoTimeouts = true for operations that
+// require extended time (e.g., very large tables, slow networks).
+//
+// Each timeout is chosen based on operational experience:
+//   - truncateTimeout: 30s allows for large table cleanup with index maintenance
+//   - selectTimeout: 2min allows for complex queries with sequential scans
+//   - txnTimeout: 2min allows for large batch inserts within a transaction
 const (
+	// truncateTimeout is the maximum time allowed for TRUNCATE TABLE operations.
+	// Larger tables may take longer if triggers or FK checks are involved.
 	truncateTimeout = 30 * time.Second
-	selectTimeout   = 2 * time.Minute
-	txnTimeout      = 2 * time.Minute
+
+	// selectTimeout is the maximum time for SELECT queries during batch reads.
+	// Complex queries or cold caches may require the full timeout.
+	selectTimeout = 2 * time.Minute
+
+	// txnTimeout is the maximum time for transaction-scoped operations.
+	// This includes batch inserts and related constraint checking.
+	txnTimeout = 2 * time.Minute
 )
 
 // rowBufferPool provides reusable row buffers to reduce GC pressure during scanning.
-// The pool stores *[]any slices that can be reused across batch operations.
+//
+// During high-throughput data copying, the scanner allocates a []any slice for each
+// row to receive column values. Without pooling, this creates significant garbage
+// collection overhead.
+//
+// This pool stores *[]any pointers (pointer to slice) because:
+//  1. sync.Pool stores interface{} values - storing slices directly would cause allocations
+//  2. Storing pointers allows us to resize the underlying slice without re-pooling
+//
+// Usage pattern:
+//
+//	buf := getRowBuffer(numCols)
+//	defer putRowBuffer(buf)
+//	err := rows.Scan(buf...)
+//
+// Thread Safety: sync.Pool is safe for concurrent use.
 var rowBufferPool = sync.Pool{
 	New: func() any {
-		// Pre-allocate a reasonable initial capacity
+		// Pre-allocate a reasonable initial capacity to reduce early reallocations.
+		// 64 columns covers most table schemas; larger tables will resize as needed.
 		slice := make([]any, 0, 64)
 		return &slice
 	},
 }
 
 // getRowBuffer retrieves a row buffer from the pool, resized to numCols.
+//
+// The returned slice is guaranteed to have length == numCols with all elements
+// set to nil (safe for sql.Rows.Scan).
+//
+// Parameters:
+//   - numCols: Number of columns to scan (must be >= 0)
+//
+// Returns: A slice of length numCols ready for scanning.
+//
+// The caller MUST call putRowBuffer when done to return the buffer to the pool.
 func getRowBuffer(numCols int) []any {
+	// Defensive: handle invalid input
+	if numCols < 0 {
+		numCols = 0
+	}
+
 	buf := rowBufferPool.Get().(*[]any)
 	if cap(*buf) < numCols {
-		// Grow capacity if needed
-		*buf = make([]any, numCols)
+		// Grow capacity if needed - allocate with some headroom
+		*buf = make([]any, numCols, numCols*2)
 	} else {
 		*buf = (*buf)[:numCols]
 	}
-	// Clear the slice (important for correct scanning)
+
+	// Clear the slice - critical for correct scanning behavior.
+	// sql.Rows.Scan expects nil interface{} values or properly typed pointers.
 	for i := range *buf {
 		(*buf)[i] = nil
 	}
@@ -47,16 +97,68 @@ func getRowBuffer(numCols int) []any {
 }
 
 // putRowBuffer returns a row buffer to the pool.
+//
+// The buffer is cleared before returning to allow GC of referenced values.
+// This prevents memory leaks from large scanned values being retained in pooled buffers.
+//
+// Parameters:
+//   - buf: The buffer slice to return (may be nil - no-op)
 func putRowBuffer(buf []any) {
-	// Clear references to allow GC of scanned values
+	if buf == nil {
+		return
+	}
+
+	// Clear references to allow GC of scanned values.
+	// This is critical - without clearing, large values could be retained indefinitely.
 	for i := range buf {
 		buf[i] = nil
 	}
 	rowBufferPool.Put(&buf)
 }
 
-// copyTablesParallel copies tables using parallel workers
+// copyTablesParallel copies tables using parallel workers.
+//
+// This function implements a worker pool pattern:
+//  1. Creates N worker goroutines (N = config.Parallel)
+//  2. Distributes tables to workers via a buffered channel
+//  3. Workers process tables independently, reporting errors via errChan
+//  4. Waits for all workers to complete, then collects and returns errors
+//
+// # Error Handling
+//
+// Individual table failures don't stop other workers. All errors are collected
+// and returned as a combined error using errors.Join. This allows maximum
+// data migration even with partial failures.
+//
+// # Cancellation
+//
+// Workers check ctx.Done() before each table and abort promptly on cancellation.
+// In-progress table copies will complete their current batch before stopping.
+//
+// # Panic Recovery
+//
+// Each worker has panic recovery to prevent one misbehaving table from
+// crashing the entire operation. Panics are converted to errors.
+//
+// Parameters:
+//   - ctx: Context for cancellation and timeout
+//   - tables: Slice of tables to copy (must not be nil)
+//
+// Returns:
+//   - error: nil on success, or combined errors from failed tables
+//
+// Thread Safety: Safe to call once per Copier instance (not concurrent-safe).
 func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) error {
+	// Defensive: handle nil or empty input
+	if len(tables) == 0 {
+		return nil
+	}
+
+	// Invariant check: parallel workers must be positive
+	if c.config.Parallel <= 0 {
+		c.config.Parallel = 1 // Safe default
+	}
+
 	// Create a channel for work distribution
 	tableChan := make(chan *TableInfo, len(tables))
 	errChan := make(chan error, c.config.Parallel)
