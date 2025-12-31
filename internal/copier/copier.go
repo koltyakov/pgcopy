@@ -61,6 +61,41 @@ func (c *Copier) getDisplayMode() DisplayMode {
 // Config is a type alias for state.OperationConfig for backward compatibility
 type Config = state.OperationConfig
 
+// connectWithRetry attempts to connect to a database with exponential backoff.
+// It tries maxAttempts times with delays of 1s, 2s, 4s between attempts.
+func connectWithRetry(driverName, connStr string, maxAttempts int) (*sql.DB, error) {
+	var db *sql.DB
+	var lastErr error
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		db, lastErr = sql.Open(driverName, connStr)
+		if lastErr != nil {
+			if attempt < maxAttempts {
+				backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+				time.Sleep(backoff)
+				continue
+			}
+			return nil, fmt.Errorf("failed to open connection after %d attempts: %w", maxAttempts, lastErr)
+		}
+
+		// Verify the connection is actually working
+		lastErr = db.Ping()
+		if lastErr == nil {
+			return db, nil
+		}
+
+		// Close the failed connection before retry
+		_ = db.Close()
+
+		if attempt < maxAttempts {
+			backoff := time.Duration(1<<(attempt-1)) * time.Second // 1s, 2s, 4s
+			time.Sleep(backoff)
+		}
+	}
+
+	return nil, fmt.Errorf("failed to connect after %d attempts: %w", maxAttempts, lastErr)
+}
+
 // Copier handles the data copying operation using centralized state management
 type Copier struct {
 	config             *state.OperationConfig
@@ -160,32 +195,24 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	// Subscribe copier itself as a listener to capture error events
 	c.state.Subscribe(c)
 
-	// Connect to source database using pgx stdlib driver
+	// Connect to source database with retry (handles transient network failures)
 	sourceConnStr := config.SourceConn
-	c.sourceDB, err = sql.Open("pgx", sourceConnStr)
+	c.sourceDB, err = connectWithRetry("pgx", sourceConnStr, 3)
 	if err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to source: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to connect to source database: %w", err)
-	}
-	if err = c.sourceDB.Ping(); err != nil {
-		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping source: %v", err), "copier", true, nil)
-		return nil, fmt.Errorf("failed to ping source database: %w", err)
 	}
 
 	// Update source connection state
 	sourceDetails := utils.ExtractConnectionDetails(sourceConnStr)
 	c.state.UpdateConnectionDetails("source", sourceDetails, state.ConnectionStatusConnected)
 
-	// Connect to destination database using pgx stdlib driver
+	// Connect to destination database with retry (handles transient network failures)
 	destConnStr := config.DestConn
-	c.destDB, err = sql.Open("pgx", destConnStr)
+	c.destDB, err = connectWithRetry("pgx", destConnStr, 3)
 	if err != nil {
 		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to dest: %v", err), "copier", true, nil)
 		return nil, fmt.Errorf("failed to connect to destination database: %w", err)
-	}
-	if err = c.destDB.Ping(); err != nil {
-		c.state.AddError("connection_error", fmt.Sprintf("Failed to ping dest: %v", err), "copier", true, nil)
-		return nil, fmt.Errorf("failed to ping destination database: %w", err)
 	}
 
 	// Update destination connection state
@@ -196,10 +223,12 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c.sourceDB.SetMaxOpenConns(config.Parallel * 2)
 	c.sourceDB.SetMaxIdleConns(config.Parallel)
 	c.sourceDB.SetConnMaxLifetime(time.Hour)
+	c.sourceDB.SetConnMaxIdleTime(5 * time.Minute) // Release idle connections during long operations
 
 	c.destDB.SetMaxOpenConns(config.Parallel * 2)
 	c.destDB.SetMaxIdleConns(config.Parallel)
 	c.destDB.SetConnMaxLifetime(time.Hour)
+	c.destDB.SetConnMaxIdleTime(5 * time.Minute) // Release idle connections during long operations
 
 	// Initialize utils logger first
 	c.logger = utils.NewSilentLogger()

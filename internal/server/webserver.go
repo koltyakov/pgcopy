@@ -68,6 +68,11 @@ func (ws *WebServer) Start() error {
 	fmt.Printf("🌐 Web interface available at: http://localhost:%d\n", ws.port)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("Web server goroutine panicked: %v\n", r)
+			}
+		}()
 		ws.srv = &http.Server{
 			Addr:         fmt.Sprintf(":%d", ws.port),
 			Handler:      ws.mux,
@@ -264,6 +269,7 @@ func (ws *WebServer) broadcastStateUpdate(event state.Event) {
 }
 
 // broadcastSnapshot sends the full state snapshot to all connected clients (debounced path)
+// For progress updates, this now sends a compact delta message to reduce bandwidth.
 func (ws *WebServer) broadcastSnapshot() {
 	// Serialize all WebSocket writes to prevent concurrent write errors
 	ws.writeMu.Lock()
@@ -275,10 +281,38 @@ func (ws *WebServer) broadcastSnapshot() {
 		return
 	}
 
+	// Build a compact progress delta instead of full snapshot
+	// This significantly reduces bandwidth for high-frequency progress updates
 	snapshot := ws.state.GetSnapshot()
+
+	// Create compact table progress array with only essential fields
+	tableProgress := make([]map[string]any, 0, len(snapshot.Tables))
+	for _, t := range snapshot.Tables {
+		if t.Status == state.TableStatusCopying || t.Status == state.TableStatusCompleted {
+			tableProgress = append(tableProgress, map[string]any{
+				"name":     t.FullName,
+				"status":   t.Status,
+				"synced":   t.SyncedRows,
+				"total":    t.TotalRows,
+				"progress": t.Progress,
+				"speed":    t.Speed,
+			})
+		}
+	}
+
 	message := map[string]any{
-		"type":  "state_snapshot",
-		"state": snapshot,
+		"type":      "progress_delta",
+		"timestamp": time.Now(),
+		"summary": map[string]any{
+			"completedTables": snapshot.Summary.CompletedTables,
+			"totalTables":     snapshot.Summary.TotalTables,
+			"syncedRows":      snapshot.Summary.SyncedRows,
+			"totalRows":       snapshot.Summary.TotalRows,
+			"overallProgress": snapshot.Summary.OverallProgress,
+			"overallSpeed":    snapshot.Summary.OverallSpeed,
+			"elapsedTime":     snapshot.Summary.ElapsedTime,
+		},
+		"tables": tableProgress,
 	}
 
 	// Create a copy of connections to avoid holding lock during writes

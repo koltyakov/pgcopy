@@ -20,6 +20,41 @@ const (
 	txnTimeout      = 2 * time.Minute
 )
 
+// rowBufferPool provides reusable row buffers to reduce GC pressure during scanning.
+// The pool stores *[]any slices that can be reused across batch operations.
+var rowBufferPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate a reasonable initial capacity
+		slice := make([]any, 0, 64)
+		return &slice
+	},
+}
+
+// getRowBuffer retrieves a row buffer from the pool, resized to numCols.
+func getRowBuffer(numCols int) []any {
+	buf := rowBufferPool.Get().(*[]any)
+	if cap(*buf) < numCols {
+		// Grow capacity if needed
+		*buf = make([]any, numCols)
+	} else {
+		*buf = (*buf)[:numCols]
+	}
+	// Clear the slice (important for correct scanning)
+	for i := range *buf {
+		(*buf)[i] = nil
+	}
+	return *buf
+}
+
+// putRowBuffer returns a row buffer to the pool.
+func putRowBuffer(buf []any) {
+	// Clear references to allow GC of scanned values
+	for i := range buf {
+		buf[i] = nil
+	}
+	rowBufferPool.Put(&buf)
+}
+
 // copyTablesParallel copies tables using parallel workers
 func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) error {
 	// Create a channel for work distribution
@@ -30,7 +65,15 @@ func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) er
 	// Start worker goroutines
 	for i := 0; i < c.config.Parallel; i++ {
 		wg.Add(1)
-		go c.worker(ctx, tableChan, errChan, &wg)
+		go func(workerID int) {
+			defer func() {
+				if r := recover(); r != nil {
+					c.logger.Error("Worker %d panicked: %v", workerID, r)
+					errChan <- fmt.Errorf("worker %d panic: %v", workerID, r)
+				}
+			}()
+			c.worker(ctx, tableChan, errChan, &wg)
+		}(i)
 	}
 
 	// Send tables to workers
@@ -46,17 +89,18 @@ func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) er
 	}()
 
 	// Collect any errors
-	var errors []error
+	var collectedErrors []error
 	for err := range errChan {
 		if err != nil {
-			errors = append(errors, err)
+			collectedErrors = append(collectedErrors, err)
 			// Use state system for error tracking
 			c.state.AddError("copy_error", err.Error(), "copier", false, nil)
 		}
 	}
 
-	if len(errors) > 0 {
-		return fmt.Errorf("%w: encountered %d errors during copy operation", utils.ErrCopyFailures, len(errors))
+	if len(collectedErrors) > 0 {
+		// Use errors.Join to preserve all error details for debugging
+		return errors.Join(append([]error{fmt.Errorf("%w: encountered %d errors during copy operation", utils.ErrCopyFailures, len(collectedErrors))}, collectedErrors...)...)
 	}
 
 	return nil
@@ -471,7 +515,8 @@ func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error { //
 	return nil
 }
 
-// scanBatch reads all rows of a keyset batch capturing both full row data and last PK tuple
+// scanBatch reads all rows of a keyset batch capturing both full row data and last PK tuple.
+// Uses pooled pointer buffers to reduce allocations in the hot path.
 func (c *Copier) scanBatch(rows *sql.Rows, table *TableInfo) (data [][]any, lastPK []any, err error) {
 	numCols := len(table.Columns)
 	pkIndex := make([]int, len(table.PKColumns))
@@ -483,9 +528,17 @@ func (c *Copier) scanBatch(rows *sql.Rows, table *TableInfo) (data [][]any, last
 			}
 		}
 	}
+
+	// Pre-allocate data slice with estimated capacity to reduce reallocations
+	data = make([][]any, 0, c.config.BatchSize)
+
+	// Get a pooled pointer buffer for scanning
+	ptrs := getRowBuffer(numCols)
+	defer putRowBuffer(ptrs)
+
 	for rows.Next() {
+		// Each row needs its own storage (can't reuse since we keep the data)
 		row := make([]any, numCols)
-		ptrs := make([]any, numCols)
 		for i := range ptrs {
 			ptrs[i] = &row[i]
 		}
@@ -622,12 +675,16 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 		c.logger.Warn("Could not set synchronous_commit=OFF for bulk insert tx: %v", err)
 	}
 
-	// Pull rows into memory for this batch
-	var scanned [][]any
+	// Pull rows into memory for this batch using pooled pointer buffer
 	numCols := len(table.Columns)
+	scanned := make([][]any, 0, c.config.BatchSize) // Pre-allocate with expected capacity
+
+	// Get a pooled pointer buffer for scanning
+	ptrs := getRowBuffer(numCols)
+	defer putRowBuffer(ptrs)
+
 	for rows.Next() {
 		row := make([]any, numCols)
-		ptrs := make([]any, numCols)
 		for i := range ptrs {
 			ptrs[i] = &row[i]
 		}

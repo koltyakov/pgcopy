@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -55,6 +56,39 @@ func findAvailablePort(startPort int) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
+// setupTwoPhaseShutdown sets up signal handling with two-phase shutdown.
+// First signal: graceful shutdown, attempts to finish vital operations (FK restore).
+// Second signal: force quit immediately.
+// Returns a channel that receives true on first signal (graceful shutdown requested).
+func setupTwoPhaseShutdown(cancel context.CancelFunc) <-chan struct{} {
+	shutdownChan := make(chan struct{}, 1)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	var shutdownRequested atomic.Bool
+
+	go func() {
+		for sig := range sigChan {
+			if shutdownRequested.CompareAndSwap(false, true) {
+				// First signal: graceful shutdown
+				fmt.Printf("\n⏹️  Shutdown requested (%v). Finishing vital operations...\n", sig)
+				fmt.Printf("   Press Ctrl-C again to force quit immediately.\n")
+				cancel() // Cancel the context to stop new work
+				select {
+				case shutdownChan <- struct{}{}:
+				default:
+				}
+			} else {
+				// Second signal: force quit
+				fmt.Printf("\n⚠️  Force quit requested. Exiting immediately.\n")
+				os.Exit(1)
+			}
+		}
+	}()
+
+	return shutdownChan
+}
+
 // copyCmd represents the copy command
 var copyCmd = &cobra.Command{
 	Use:   "copy",
@@ -82,11 +116,15 @@ Examples:
 		dryRun, _ := cmd.Flags().GetBool("dry-run")
 		skipBackup, _ := cmd.Flags().GetBool("skip-backup")
 		output, _ := cmd.Flags().GetString("output")
-		useCopyPipe, _ := cmd.Flags().GetBool("copy-pipe")
+		legacyBulk, _ := cmd.Flags().GetBool("legacy-bulk")
 		compressPipe, _ := cmd.Flags().GetBool("compress")
 		exactRows, _ := cmd.Flags().GetBool("exact-rows")
 		noTimeouts, _ := cmd.Flags().GetBool("no-timeouts")
 		snapshot, _ := cmd.Flags().GetBool("snapshot")
+
+		// StreamCopy (COPY protocol) is now the default; use --legacy-bulk to revert
+		useCopyPipe := !legacyBulk
+
 		// Parse display mode
 		var displayMode copier.DisplayMode
 		switch output {
@@ -147,9 +185,8 @@ Examples:
 			}
 			defer stateCopier.Close()
 
-			// Handle graceful shutdown
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+			// Setup two-phase graceful shutdown
+			shutdownChan := setupTwoPhaseShutdown(cancel)
 
 			// Start copy operation in a goroutine
 			copyDone := make(chan error, 1)
@@ -194,18 +231,18 @@ Examples:
 				}
 				fmt.Printf("\n🎉 Copy operation completed successfully!\n")
 				fmt.Printf("You can close the web interface now.\n")
-			case <-c:
-				fmt.Printf("\n⏹️  Operation cancelled by user\n")
-				// Try to restore foreign keys on graceful shutdown
-				if stateCopier != nil && stateCopier.State() != nil {
-					// Best-effort: create a short-lived context and call cleanup explicitly
-					ctxCancel, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-					_ = ctxCancel
-					// We don’t have direct access to copier internals here; rely on internal cleanup when Close triggers
-					// Close will shutdown the web server; FK restore is handled in copier cleanup after Copy returns.
-					// Since we interrupted, proactively call Close to ensure web server stops.
-					stateCopier.Close()
-					cancel2()
+			case <-shutdownChan:
+				// Graceful shutdown: wait for copy to finish (which includes FK restoration)
+				// The context is already cancelled, so Copy() should wind down
+				select {
+				case err := <-copyDone:
+					if err != nil {
+						fmt.Printf("Copy operation ended with error: %v\n", err)
+					} else {
+						fmt.Printf("Graceful shutdown completed.\n")
+					}
+				case <-time.After(30 * time.Second):
+					fmt.Printf("Timeout waiting for graceful shutdown.\n")
 				}
 				return
 			}
@@ -218,9 +255,8 @@ Examples:
 			}
 			defer dataCopier.Close()
 
-			// Graceful shutdown: cancel ctx on SIGINT/SIGTERM
-			c := make(chan os.Signal, 1)
-			signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+			// Setup two-phase graceful shutdown
+			shutdownChan := setupTwoPhaseShutdown(cancel)
 
 			done := make(chan error, 1)
 			go func() { done <- dataCopier.Copy(ctx) }()
@@ -231,10 +267,18 @@ Examples:
 					duration := time.Since(start)
 					log.Fatalf("Copy operation failed after %s: %v", utils.FormatDuration(duration), err)
 				}
-			case <-c:
-				fmt.Printf("\n⏹️  Operation cancelled by user\n")
-				cancel()
-				// dataCopier.Close() will run at defer and cleanup will attempt FK restoration if needed
+			case <-shutdownChan:
+				// Graceful shutdown: wait for copy to finish (which includes FK restoration)
+				select {
+				case err := <-done:
+					if err != nil {
+						fmt.Printf("Copy operation ended with error: %v\n", err)
+					} else {
+						fmt.Printf("Graceful shutdown completed.\n")
+					}
+				case <-time.After(30 * time.Second):
+					fmt.Printf("Timeout waiting for graceful shutdown.\n")
+				}
 				return
 			}
 		}
@@ -253,8 +297,8 @@ func init() {
 	copyCmd.Flags().Bool("dry-run", false, "Show what would be copied without actually copying data")
 	copyCmd.Flags().Bool("skip-backup", false, "Skip confirmation dialog for data overwrite")
 	copyCmd.Flags().StringP("output", "o", "plain", "Output mode: 'plain' (minimal output, default), 'progress' (progress bar), 'interactive' (live table progress), 'web' (web interface; auto on :8080 or random)")
-	copyCmd.Flags().Bool("copy-pipe", false, "Use streaming COPY pipeline (source->dest) instead of row fetch + insert")
-	copyCmd.Flags().Bool("compress", false, "Gzip-compress streaming COPY pipeline (requires --copy-pipe)")
+	copyCmd.Flags().Bool("legacy-bulk", false, "Use legacy bulk INSERT mode instead of streaming COPY pipeline (slower but more compatible)")
+	copyCmd.Flags().Bool("compress", false, "Gzip-compress streaming COPY pipeline")
 	copyCmd.Flags().Bool("exact-rows", false, "Use exact row counting (COUNT(*)) during discovery to avoid bad estimates after TRUNCATE; slower on large tables")
 	copyCmd.Flags().Bool("no-timeouts", false, "Disable internal operation timeouts (use with caution; may wait indefinitely)")
 	copyCmd.Flags().Bool("snapshot", false, "Read each table inside a REPEATABLE READ transaction to ensure consistent pagination (avoids missing/duplicate rows if new rows are inserted during copy)")

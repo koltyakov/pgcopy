@@ -16,14 +16,75 @@ func generateID() string {
 	return hex.EncodeToString(bytes)
 }
 
+// validOperationTransitions defines allowed state transitions for operations.
+// This prevents invalid state changes (e.g., completed -> copying) that could
+// indicate bugs or race conditions.
+var validOperationTransitions = map[OperationStatus][]OperationStatus{
+	StatusInitializing: {StatusPreparing, StatusConfirming, StatusFailed, StatusCancelled},
+	StatusConfirming:   {StatusPreparing, StatusCancelled},
+	StatusPreparing:    {StatusCopying, StatusCompleted, StatusFailed, StatusCancelled},
+	StatusCopying:      {StatusCompleted, StatusFailed, StatusCancelled},
+	StatusCompleted:    {}, // Terminal state - no transitions allowed
+	StatusFailed:       {}, // Terminal state - no transitions allowed
+	StatusCancelled:    {}, // Terminal state - no transitions allowed
+}
+
+// validTableTransitions defines allowed state transitions for tables.
+var validTableTransitions = map[TableStatus][]TableStatus{
+	TableStatusPending:   {TableStatusQueued, TableStatusCopying, TableStatusSkipped, TableStatusCancelled},
+	TableStatusQueued:    {TableStatusCopying, TableStatusSkipped, TableStatusCancelled},
+	TableStatusCopying:   {TableStatusCompleted, TableStatusFailed, TableStatusRetrying, TableStatusCancelled},
+	TableStatusRetrying:  {TableStatusCopying, TableStatusFailed, TableStatusCancelled},
+	TableStatusCompleted: {},                    // Terminal state
+	TableStatusFailed:    {TableStatusRetrying}, // Can retry from failed
+	TableStatusSkipped:   {},                    // Terminal state
+	TableStatusCancelled: {},                    // Terminal state
+}
+
+// isValidOperationTransition checks if transitioning from old to new status is valid.
+func isValidOperationTransition(old, new OperationStatus) bool {
+	allowed, exists := validOperationTransitions[old]
+	if !exists {
+		return false
+	}
+	for _, s := range allowed {
+		if s == new {
+			return true
+		}
+	}
+	return false
+}
+
+// isValidTableTransition checks if transitioning from old to new status is valid.
+func isValidTableTransition(old, new TableStatus) bool {
+	allowed, exists := validTableTransitions[old]
+	if !exists {
+		return false
+	}
+	for _, s := range allowed {
+		if s == new {
+			return true
+		}
+	}
+	return false
+}
+
 // Hook methods for updating state (React-like API)
 
-// SetStatus updates the operation status
+// SetStatus updates the operation status with validation
 func (s *CopyState) SetStatus(status OperationStatus) {
 	var event Event
 
 	s.mu.Lock()
 	oldStatus := s.Status
+
+	// Validate state transition
+	if oldStatus != status && !isValidOperationTransition(oldStatus, status) {
+		// Log warning but allow transition for robustness
+		// This helps identify bugs without breaking functionality
+		fmt.Printf("Warning: Invalid operation state transition: %s -> %s\n", oldStatus, status)
+	}
+
 	s.Status = status
 
 	if status == StatusCompleted || status == StatusFailed || status == StatusCancelled {
@@ -88,6 +149,13 @@ func (s *CopyState) UpdateTableStatus(schema, name string, status TableStatus) {
 
 	table := &s.Tables[tableIndex]
 	oldStatus := table.Status
+
+	// Validate state transition
+	if oldStatus != status && !isValidTableTransition(oldStatus, status) {
+		// Log warning but allow transition for robustness
+		fmt.Printf("Warning: Invalid table state transition for %s.%s: %s -> %s\n", schema, name, oldStatus, status)
+	}
+
 	table.Status = status
 
 	now := time.Now()
