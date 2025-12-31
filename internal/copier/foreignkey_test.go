@@ -3,6 +3,8 @@ package copier
 import (
 	"sync"
 	"testing"
+
+	"github.com/koltyakov/pgcopy/internal/utils"
 )
 
 func TestForeignKeyManager_sortKeysByDependency(t *testing.T) {
@@ -281,5 +283,171 @@ func TestForeignKeyManager_IsUsingReplicaMode(t *testing.T) {
 	fkm.useReplica = true
 	if !fkm.IsUsingReplicaMode() {
 		t.Error("Expected replica mode to be true")
+	}
+}
+
+func TestNewForeignKeyManager(t *testing.T) {
+	fkm := NewForeignKeyManager(nil, nil, false)
+
+	if fkm == nil {
+		t.Fatal("Expected non-nil ForeignKeyManager")
+	}
+
+	if fkm.foreignKeys == nil {
+		t.Error("Expected foreignKeys to be initialized")
+	}
+	if fkm.droppedKeys == nil {
+		t.Error("Expected droppedKeys to be initialized")
+	}
+	if fkm.restoredKeys == nil {
+		t.Error("Expected restoredKeys to be initialized")
+	}
+	if fkm.processedConstraints == nil {
+		t.Error("Expected processedConstraints to be initialized")
+	}
+	if fkm.backupFile != ".fk_backup.sql" {
+		t.Errorf("Expected backupFile to be '.fk_backup.sql', got %s", fkm.backupFile)
+	}
+	if fkm.initialBackupDone {
+		t.Error("Expected initialBackupDone to be false")
+	}
+}
+
+func TestNewForeignKeyManager_NoTimeouts(t *testing.T) {
+	fkm := NewForeignKeyManager(nil, nil, true)
+
+	if !fkm.noTimeouts {
+		t.Error("Expected noTimeouts to be true")
+	}
+}
+
+func TestForeignKeyManager_SetLogger(t *testing.T) {
+	fkm := &ForeignKeyManager{}
+
+	if fkm.logger != nil {
+		t.Error("Expected logger to be nil initially")
+	}
+
+	logger := &utils.SimpleLogger{}
+	fkm.SetLogger(logger)
+
+	if fkm.logger == nil {
+		t.Error("Expected logger to be set")
+	}
+}
+
+func TestForeignKeyManager_sortKeysByDependency_Empty(t *testing.T) {
+	fkm := &ForeignKeyManager{}
+
+	sorted := fkm.sortKeysByDependency(nil)
+	if len(sorted) != 0 {
+		t.Errorf("Expected empty slice for nil input, got %d", len(sorted))
+	}
+
+	sorted = fkm.sortKeysByDependency([]ForeignKey{})
+	if len(sorted) != 0 {
+		t.Errorf("Expected empty slice for empty input, got %d", len(sorted))
+	}
+}
+
+func TestForeignKeyManager_sortKeysByDependency_AllSelfRef(t *testing.T) {
+	fkm := &ForeignKeyManager{}
+
+	keys := []ForeignKey{
+		{
+			ConstraintName:   "fk_self1",
+			Schema:           "public",
+			Table:            "a",
+			ReferencedSchema: "public",
+			ReferencedTable:  "a",
+		},
+		{
+			ConstraintName:   "fk_self2",
+			Schema:           "public",
+			Table:            "b",
+			ReferencedSchema: "public",
+			ReferencedTable:  "b",
+		},
+	}
+
+	sorted := fkm.sortKeysByDependency(keys)
+	if len(sorted) != 2 {
+		t.Errorf("Expected 2 keys, got %d", len(sorted))
+	}
+}
+
+func TestForeignKeyManager_buildConstraintDefinition_OnlyDelete(t *testing.T) {
+	fkm := &ForeignKeyManager{}
+
+	fk := &ForeignKey{
+		ConstraintName:    "fk_cascade",
+		Schema:            "public",
+		Table:             "orders",
+		Columns:           []string{"user_id"},
+		ReferencedSchema:  "public",
+		ReferencedTable:   "users",
+		ReferencedColumns: []string{"id"},
+		OnDelete:          "CASCADE",
+		OnUpdate:          "NO ACTION",
+	}
+
+	definition := fkm.buildConstraintDefinition(fk)
+
+	expected := `ALTER TABLE "public"."orders" ADD CONSTRAINT "fk_cascade" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") ON DELETE CASCADE NOT VALID`
+
+	if definition != expected {
+		t.Errorf("Expected:\n%s\nGot:\n%s", expected, definition)
+	}
+}
+
+func TestForeignKeyManager_buildConstraintDefinition_OnlyUpdate(t *testing.T) {
+	fkm := &ForeignKeyManager{}
+
+	fk := &ForeignKey{
+		ConstraintName:    "fk_update",
+		Schema:            "public",
+		Table:             "orders",
+		Columns:           []string{"user_id"},
+		ReferencedSchema:  "public",
+		ReferencedTable:   "users",
+		ReferencedColumns: []string{"id"},
+		OnDelete:          "NO ACTION",
+		OnUpdate:          "SET NULL",
+	}
+
+	definition := fkm.buildConstraintDefinition(fk)
+
+	expected := `ALTER TABLE "public"."orders" ADD CONSTRAINT "fk_update" FOREIGN KEY ("user_id") REFERENCES "public"."users" ("id") ON UPDATE SET NULL NOT VALID`
+
+	if definition != expected {
+		t.Errorf("Expected:\n%s\nGot:\n%s", expected, definition)
+	}
+}
+
+func TestForeignKeyManager_DeduplicationLogic_NoDuplicates(t *testing.T) {
+	fkm := &ForeignKeyManager{
+		droppedKeys: []ForeignKey{
+			{ConstraintName: "fk_1", Schema: "public", Table: "t1"},
+			{ConstraintName: "fk_2", Schema: "public", Table: "t2"},
+			{ConstraintName: "fk_3", Schema: "public", Table: "t3"},
+		},
+	}
+
+	fkm.deduplicateDroppedKeys()
+
+	if len(fkm.droppedKeys) != 3 {
+		t.Errorf("Expected 3 keys, got %d", len(fkm.droppedKeys))
+	}
+}
+
+func TestForeignKeyManager_GetForeignKeyStats_Empty(t *testing.T) {
+	fkm := &ForeignKeyManager{
+		foreignKeys: []ForeignKey{},
+		droppedKeys: []ForeignKey{},
+	}
+
+	total, dropped := fkm.GetForeignKeyStats()
+	if total != 0 || dropped != 0 {
+		t.Errorf("Expected (0, 0), got (%d, %d)", total, dropped)
 	}
 }
