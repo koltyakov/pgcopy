@@ -66,7 +66,7 @@ func TestNewSilentLogger(t *testing.T) {
 	}
 }
 
-func TestSimpleLogger_SilentMode(t *testing.T) {
+func TestSimpleLogger_SilentMode(_ *testing.T) {
 	logger := NewSilentLogger()
 
 	// These should not panic and should do nothing
@@ -122,7 +122,7 @@ func TestSimpleLogger_GetLevel(t *testing.T) {
 	}
 }
 
-func TestSimpleLogger_LevelFiltering(t *testing.T) {
+func TestSimpleLogger_LevelFiltering(_ *testing.T) {
 	// Logger set to Warn level should not log Debug or Info
 	var buf bytes.Buffer
 	logger := NewSimpleLoggerWithLevel(log.New(&buf, "", 0), LevelWarn)
@@ -221,28 +221,28 @@ func TestLogLevelConstants(t *testing.T) {
 	}
 }
 
-func TestSimpleLogger_Debug_Filtering(t *testing.T) {
+func TestSimpleLogger_Debug_Filtering(_ *testing.T) {
 	logger := NewSimpleLoggerWithLevel(log.New(io.Discard, "", 0), LevelInfo)
 
 	// Should not panic and should be filtered (Info level doesn't show Debug)
 	logger.Debug("test %s", "message")
 }
 
-func TestSimpleLogger_Info_Formatting(t *testing.T) {
+func TestSimpleLogger_Info_Formatting(_ *testing.T) {
 	logger := NewSimpleLoggerWithLevel(log.New(io.Discard, "", 0), LevelInfo)
 
 	// Should not panic
 	logger.Info("test %s %d", "message", 42)
 }
 
-func TestSimpleLogger_Warn_Formatting(t *testing.T) {
+func TestSimpleLogger_Warn_Formatting(_ *testing.T) {
 	logger := NewSimpleLoggerWithLevel(log.New(io.Discard, "", 0), LevelWarn)
 
 	// Should not panic
 	logger.Warn("warning: %s", "something")
 }
 
-func TestSimpleLogger_Error_Formatting(t *testing.T) {
+func TestSimpleLogger_Error_Formatting(_ *testing.T) {
 	logger := NewSimpleLoggerWithLevel(log.New(io.Discard, "", 0), LevelError)
 
 	// Should not panic

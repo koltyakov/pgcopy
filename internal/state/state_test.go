@@ -103,8 +103,9 @@ func TestCopyState_AddTable(t *testing.T) {
 	if table.Name != "users" {
 		t.Errorf("Expected name 'users', got '%s'", table.Name)
 	}
-	if table.FullName != "public.users" {
-		t.Errorf("Expected full name 'public.users', got '%s'", table.FullName)
+	const expectedFullName = "public.users"
+	if table.FullName != expectedFullName {
+		t.Errorf("Expected full name '%s', got '%s'", expectedFullName, table.FullName)
 	}
 	if table.TotalRows != 1000 {
 		t.Errorf("Expected total rows 1000, got %d", table.TotalRows)
@@ -184,7 +185,7 @@ func TestCopyState_UpdateTableProgress(t *testing.T) {
 	}
 }
 
-func TestCopyState_UpdateTableProgress_NonExistent(t *testing.T) {
+func TestCopyState_UpdateTableProgress_NonExistent(_ *testing.T) {
 	state := NewCopyState("test", OperationConfig{Parallel: 4})
 
 	// Should not panic when updating non-existent table
@@ -210,8 +211,9 @@ func TestCopyState_AddLog(t *testing.T) {
 	if log.Component != "copier" {
 		t.Errorf("Expected component 'copier', got '%s'", log.Component)
 	}
-	if log.Table != "public.users" {
-		t.Errorf("Expected table 'public.users', got '%s'", log.Table)
+	const expectedTable = "public.users"
+	if log.Table != expectedTable {
+		t.Errorf("Expected table '%s', got '%s'", expectedTable, log.Table)
 	}
 }
 
@@ -259,7 +261,7 @@ func TestCopyState_Subscribe_Unsubscribe(t *testing.T) {
 	var mu sync.Mutex
 
 	listener := &testListener{
-		onStateChange: func(s *CopyState, e Event) {
+		onStateChange: func(_ *CopyState, e Event) {
 			mu.Lock()
 			receivedEvents = append(receivedEvents, e)
 			mu.Unlock()
@@ -293,7 +295,7 @@ func TestCopyState_Subscribe_Unsubscribe(t *testing.T) {
 	mu.Unlock()
 }
 
-func TestCopyState_ConcurrentAccess(t *testing.T) {
+func TestCopyState_ConcurrentAccess(_ *testing.T) {
 	state := NewCopyState("test", OperationConfig{Parallel: 4})
 
 	var wg sync.WaitGroup
@@ -308,7 +310,7 @@ func TestCopyState_ConcurrentAccess(t *testing.T) {
 	wg.Add(numGoroutines)
 
 	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
+		go func(_ int) {
 			defer wg.Done()
 			for j := 0; j < numOperations; j++ {
 				switch j % 4 {

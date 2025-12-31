@@ -1,4 +1,4 @@
-package utils
+package utils //nolint:revive // test file for utils package
 
 import (
 	"os"
@@ -49,13 +49,11 @@ func TestColorize(t *testing.T) {
 	}
 }
 
-func TestColorize_EmptyText(t *testing.T) {
+func TestColorize_EmptyText(_ *testing.T) {
 	result := Colorize(ColorRed, "")
 
-	// Empty text with colors should work
-	if result != "" && result != ColorRed+ColorReset {
-		// Either empty (no color support) or colored empty string
-	}
+	// Empty text with colors should work - either empty or colored empty string
+	_ = result // Result validated by not panicking
 }
 
 func TestIsColorSupported(t *testing.T) {
@@ -79,8 +77,8 @@ func TestIsColorSupported_StderrStat(t *testing.T) {
 	if err != nil {
 		t.Skip("Cannot create pipe for testing")
 	}
-	defer r.Close()
-	defer w.Close()
+	defer func() { _ = r.Close() }()
+	defer func() { _ = w.Close() }()
 
 	os.Stderr = w
 	result := IsColorSupported()

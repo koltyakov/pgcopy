@@ -1,4 +1,4 @@
-package utils
+package utils //nolint:revive // test file for utils package
 
 import (
 	"testing"

@@ -97,14 +97,14 @@ var validTableTransitions = map[TableStatus][]TableStatus{
 //
 // Returns true if the transition is allowed according to validOperationTransitions.
 // Returns false for unknown states or disallowed transitions.
-func isValidOperationTransition(old, new OperationStatus) bool {
+func isValidOperationTransition(old, next OperationStatus) bool {
 	allowed, exists := validOperationTransitions[old]
 	if !exists {
 		// Unknown state - should never happen in production
 		return false
 	}
 	for _, s := range allowed {
-		if s == new {
+		if s == next {
 			return true
 		}
 	}
@@ -115,14 +115,14 @@ func isValidOperationTransition(old, new OperationStatus) bool {
 //
 // Returns true if the transition is allowed according to validTableTransitions.
 // Returns false for unknown states or disallowed transitions.
-func isValidTableTransition(old, new TableStatus) bool {
+func isValidTableTransition(old, next TableStatus) bool {
 	allowed, exists := validTableTransitions[old]
 	if !exists {
 		// Unknown state - should never happen in production
 		return false
 	}
 	for _, s := range allowed {
-		if s == new {
+		if s == next {
 			return true
 		}
 	}

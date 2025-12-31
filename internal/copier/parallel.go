@@ -182,7 +182,7 @@ func itoa(n int) string {
 //   - startParam: starting parameter number (usually 1)
 //
 // Returns the next parameter number after the last placeholder.
-func buildValuesClause(sb *strings.Builder, numCols, numRows, startParam int) int {
+func buildValuesClause(sb *strings.Builder, numCols, numRows, startParam int) int { //nolint:unparam // startParam kept for API flexibility
 	param := startParam
 	for row := 0; row < numRows; row++ {
 		if row > 0 {

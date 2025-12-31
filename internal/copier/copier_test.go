@@ -15,7 +15,7 @@ func TestConfig_Validation(t *testing.T) {
 			name: "complete config",
 			config: &Config{
 				SourceConn:    "source connection",
-				TargetConn:      "dest connection",
+				TargetConn:    "dest connection",
 				Parallel:      4,
 				BatchSize:     1000,
 				IncludeTables: []string{"users", "orders"},
@@ -29,7 +29,7 @@ func TestConfig_Validation(t *testing.T) {
 			name: "minimal config",
 			config: &Config{
 				SourceConn: "source connection",
-				TargetConn:   "dest connection",
+				TargetConn: "dest connection",
 				Parallel:   2,
 				BatchSize:  500,
 				OutputMode: "raw",
@@ -60,7 +60,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "valid config with connections",
 			config: &Config{
 				SourceConn: "source connection string",
-				TargetConn:   "dest connection string",
+				TargetConn: "dest connection string",
 				Parallel:   2,
 				BatchSize:  1000,
 			},
@@ -70,7 +70,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "valid config with connection strings",
 			config: &Config{
 				SourceConn: "postgres://user:pass@source:5432/db",
-				TargetConn:   "postgres://user:pass@dest:5432/db",
+				TargetConn: "postgres://user:pass@dest:5432/db",
 				Parallel:   1,
 				BatchSize:  100,
 			},
@@ -79,9 +79,9 @@ func TestValidateConfig(t *testing.T) {
 		{
 			name: "missing source",
 			config: &Config{
-				TargetConn:  "dest connection string",
-				Parallel:  2,
-				BatchSize: 1000,
+				TargetConn: "dest connection string",
+				Parallel:   2,
+				BatchSize:  1000,
 			},
 			wantErr: true,
 		},
@@ -98,7 +98,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "invalid parallel workers",
 			config: &Config{
 				SourceConn: "source connection string",
-				TargetConn:   "dest connection string",
+				TargetConn: "dest connection string",
 				Parallel:   0,
 				BatchSize:  1000,
 			},
@@ -108,7 +108,7 @@ func TestValidateConfig(t *testing.T) {
 			name: "invalid batch size",
 			config: &Config{
 				SourceConn: "source connection string",
-				TargetConn:   "dest connection string",
+				TargetConn: "dest connection string",
 				Parallel:   2,
 				BatchSize:  50,
 			},
@@ -292,7 +292,7 @@ func TestShouldSkipTable_WildcardPatterns(t *testing.T) {
 func TestCopier_StateIntegration(t *testing.T) {
 	config := &Config{
 		SourceConn: "test source",
-		TargetConn:   "test dest",
+		TargetConn: "test dest",
 		Parallel:   2,
 		BatchSize:  500,
 		OutputMode: "raw",
@@ -352,7 +352,7 @@ func TestValidateConfig_EdgeCases(t *testing.T) {
 			name: "negative parallel",
 			config: &Config{
 				SourceConn: "source",
-				TargetConn:   "dest",
+				TargetConn: "dest",
 				Parallel:   -1,
 				BatchSize:  1000,
 			},
@@ -362,7 +362,7 @@ func TestValidateConfig_EdgeCases(t *testing.T) {
 			name: "zero batch size",
 			config: &Config{
 				SourceConn: "source",
-				TargetConn:   "dest",
+				TargetConn: "dest",
 				Parallel:   1,
 				BatchSize:  0,
 			},
@@ -372,7 +372,7 @@ func TestValidateConfig_EdgeCases(t *testing.T) {
 			name: "empty include and exclude lists",
 			config: &Config{
 				SourceConn:    "source",
-				TargetConn:      "dest",
+				TargetConn:    "dest",
 				Parallel:      1,
 				BatchSize:     1000,
 				IncludeTables: []string{},
@@ -395,7 +395,7 @@ func TestValidateConfig_EdgeCases(t *testing.T) {
 func TestCopier_WebModeIntegration(t *testing.T) {
 	config := &Config{
 		SourceConn: "test source",
-		TargetConn:   "test dest",
+		TargetConn: "test dest",
 		Parallel:   2,
 		BatchSize:  500,
 		OutputMode: "web",

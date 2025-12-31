@@ -23,7 +23,7 @@ func TestNewInteractiveDisplay(t *testing.T) {
 	if display.spinnerIndex != 0 {
 		t.Errorf("Expected spinnerIndex 0, got %d", display.spinnerIndex)
 	}
-	if display.isActive {
+	if display.isActive.Load() {
 		t.Error("Expected isActive to be false initially")
 	}
 }
@@ -49,7 +49,7 @@ func TestInteractiveDisplay_StartStop(t *testing.T) {
 	display.Start()
 
 	display.mu.RLock()
-	isActive := display.isActive
+	isActive := display.isActive.Load()
 	startTime := display.startTime
 	display.mu.RUnlock()
 
@@ -69,7 +69,7 @@ func TestInteractiveDisplay_StartStop(t *testing.T) {
 	// Give time for goroutine to stop
 	time.Sleep(50 * time.Millisecond)
 
-	if display.isActive {
+	if display.isActive.Load() {
 		t.Error("Expected isActive to be false after Stop")
 	}
 }

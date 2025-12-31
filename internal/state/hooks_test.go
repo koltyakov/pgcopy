@@ -174,7 +174,7 @@ func TestCopyState_AddTableError(t *testing.T) {
 	}
 }
 
-func TestCopyState_AddTableError_NonExistent(t *testing.T) {
+func TestCopyState_AddTableError_NonExistent(_ *testing.T) {
 	state := NewCopyState("test", OperationConfig{Parallel: 4})
 
 	// Should not panic

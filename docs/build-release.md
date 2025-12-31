@@ -26,3 +26,10 @@ make build-all
 - CI runs GoReleaser to produce multi-platform binaries, checksums, and signed artifacts
 - Binaries are published to GitHub Releases
 - Homebrew/Docker publishing handled in CI
+
+## Release shortcut
+
+```bash
+git tag v0.7.0
+git push --tags
+```

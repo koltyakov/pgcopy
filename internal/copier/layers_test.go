@@ -353,17 +353,17 @@ func TestDefaultPlanner_PlanLayers_MultipleSchemas(t *testing.T) {
 	}
 }
 
-func TestDefaultDiscovery_Interface(t *testing.T) {
+func TestDefaultDiscovery_Interface(_ *testing.T) {
 	// Test that defaultDiscovery implements Discovery interface
 	var _ Discovery = &defaultDiscovery{}
 }
 
-func TestDefaultPlanner_Interface(t *testing.T) {
+func TestDefaultPlanner_Interface(_ *testing.T) {
 	// Test that defaultPlanner implements Planner interface
 	var _ Planner = &defaultPlanner{}
 }
 
-func TestDefaultExecutor_Interface(t *testing.T) {
+func TestDefaultExecutor_Interface(_ *testing.T) {
 	// Test that defaultExecutor implements Executor interface
 	var _ Executor = &defaultExecutor{}
 }

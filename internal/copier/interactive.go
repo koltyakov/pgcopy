@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/koltyakov/pgcopy/internal/state"
@@ -19,7 +20,7 @@ type InteractiveDisplay struct {
 	startTime       time.Time
 	maxDisplayLines int
 	spinnerIndex    int
-	isActive        bool
+	isActive        atomic.Bool
 }
 
 var spinnerChars = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -30,14 +31,14 @@ func NewInteractiveDisplay(state *state.CopyState) *InteractiveDisplay {
 		state:           state,
 		maxDisplayLines: 20, // Increased to accommodate all in-progress tables
 		spinnerIndex:    0,
-		isActive:        false,
+		// isActive defaults to false (zero value of atomic.Bool)
 	}
 }
 
 // Start begins the interactive display loop
 func (d *InteractiveDisplay) Start() {
 	d.mu.Lock()
-	d.isActive = true
+	d.isActive.Store(true)
 	d.startTime = time.Now()
 	d.mu.Unlock()
 
@@ -56,7 +57,7 @@ func (d *InteractiveDisplay) Start() {
 		ticker := time.NewTicker(100 * time.Millisecond) // Update 10 times per second
 		defer ticker.Stop()
 
-		for d.isActive {
+		for d.isActive.Load() {
 			<-ticker.C
 			d.render()
 		}
@@ -65,7 +66,7 @@ func (d *InteractiveDisplay) Start() {
 
 // Stop stops the interactive display
 func (d *InteractiveDisplay) Stop() {
-	d.isActive = false
+	d.isActive.Store(false)
 
 	// Show cursor
 	fmt.Print("\033[?25h")
@@ -79,7 +80,7 @@ func (d *InteractiveDisplay) Stop() {
 
 // render updates the display
 func (d *InteractiveDisplay) render() {
-	if !d.isActive {
+	if !d.isActive.Load() {
 		return
 	}
 

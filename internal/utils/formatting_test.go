@@ -179,9 +179,10 @@ func TestExtractConnectionDetails(t *testing.T) {
 }
 
 func TestExtractConnectionDetails_Invalid(t *testing.T) {
+	const expectedUnavailable = "connection details unavailable"
 	result := ExtractConnectionDetails("://invalid")
-	if result != "connection details unavailable" {
-		t.Errorf("Expected 'connection details unavailable', got '%s'", result)
+	if result != expectedUnavailable {
+		t.Errorf("Expected '%s', got '%s'", expectedUnavailable, result)
 	}
 }
 
