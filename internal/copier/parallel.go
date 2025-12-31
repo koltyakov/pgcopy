@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -114,6 +115,91 @@ func putRowBuffer(buf []any) {
 		buf[i] = nil
 	}
 	rowBufferPool.Put(&buf)
+}
+
+// stringBuilderPool provides reusable string builders to reduce GC pressure during INSERT statement construction.
+//
+// Building INSERT statements involves significant string concatenation. Without pooling, each batch
+// creates and discards a strings.Builder, causing GC overhead.
+//
+// Thread Safety: sync.Pool is safe for concurrent use.
+var stringBuilderPool = sync.Pool{
+	New: func() any {
+		// Pre-allocate reasonable capacity for typical INSERT statements.
+		// Average INSERT: ~50 bytes header + (numCols * 5 bytes per placeholder) * numRows
+		sb := &strings.Builder{}
+		sb.Grow(65536) // 64KB initial capacity covers most batches
+		return sb
+	},
+}
+
+// getStringBuilder retrieves a string builder from the pool, reset and ready to use.
+func getStringBuilder() *strings.Builder {
+	sb := stringBuilderPool.Get().(*strings.Builder)
+	sb.Reset()
+	return sb
+}
+
+// putStringBuilder returns a string builder to the pool.
+func putStringBuilder(sb *strings.Builder) {
+	if sb == nil {
+		return
+	}
+	// Only pool builders that haven't grown too large (avoid memory hoarding)
+	if sb.Cap() <= 1<<20 { // 1MB limit
+		stringBuilderPool.Put(sb)
+	}
+}
+
+// placeholderCache stores pre-computed placeholder integer strings for fast lookup.
+// Avoids strconv.Itoa allocations for common parameter numbers.
+var placeholderInts = func() []string {
+	// Pre-compute strings for parameters 1-65535 (PostgreSQL max)
+	// This uses ~1MB of memory but eliminates allocations in the hot path.
+	const maxParams = 65536
+	strs := make([]string, maxParams)
+	for i := range strs {
+		strs[i] = strconv.Itoa(i)
+	}
+	return strs
+}()
+
+// itoa returns a string representation of n without allocation for common values.
+func itoa(n int) string {
+	if n >= 0 && n < len(placeholderInts) {
+		return placeholderInts[n]
+	}
+	return strconv.Itoa(n)
+}
+
+// buildValuesClause constructs the VALUES clause for a multi-row INSERT efficiently.
+// Uses pre-allocated integer strings to avoid allocations in the hot loop.
+//
+// Parameters:
+//   - sb: string builder to write to (should be reset before calling)
+//   - numCols: number of columns per row
+//   - numRows: number of rows to include
+//   - startParam: starting parameter number (usually 1)
+//
+// Returns the next parameter number after the last placeholder.
+func buildValuesClause(sb *strings.Builder, numCols, numRows, startParam int) int {
+	param := startParam
+	for row := 0; row < numRows; row++ {
+		if row > 0 {
+			sb.WriteString(", ")
+		}
+		sb.WriteByte('(')
+		for col := 0; col < numCols; col++ {
+			if col > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteByte('$')
+			sb.WriteString(itoa(param))
+			param++
+		}
+		sb.WriteByte(')')
+	}
+	return param
 }
 
 // copyTablesParallel copies tables using parallel workers.
@@ -702,32 +788,31 @@ func (c *Copier) insertScannedBatch(ctx context.Context, table *TableInfo, colum
 		maxRowsPerStmt = 1
 	}
 	totalInserted := int64(0)
+
+	// Pre-compute the INSERT header (reused for all chunks)
+	insertHeader := "INSERT INTO " + utils.QuoteTable(table.Schema, table.Name) + " (" + columnList + ") VALUES "
+
+	// Get a pooled string builder for statement construction
+	sb := getStringBuilder()
+	defer putStringBuilder(sb)
+
 	for start := 0; start < len(scanned); start += maxRowsPerStmt {
 		end := min(start+maxRowsPerStmt, len(scanned))
 		chunk := scanned[start:end]
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO ")
-		sb.WriteString(utils.QuoteTable(table.Schema, table.Name))
-		sb.WriteString(" (")
-		sb.WriteString(columnList)
-		sb.WriteString(") VALUES ")
+
+		// Reset builder and construct INSERT statement
+		sb.Reset()
+		sb.WriteString(insertHeader)
+
+		// Build VALUES clause efficiently using pre-allocated integer strings
+		buildValuesClause(sb, numCols, len(chunk), 1)
+
+		// Flatten args: pre-allocate with exact capacity
 		args := make([]any, 0, len(chunk)*numCols)
-		param := 1
-		for i, row := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(")
-			for j := range numCols {
-				if j > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("$%d", param))
-				param++
-				args = append(args, row[j])
-			}
-			sb.WriteString(")")
+		for _, row := range chunk {
+			args = append(args, row...)
 		}
+
 		stmt := sb.String()
 		c.logger.Debug("INSERT (keyset) for %s: %d rows", utils.HighlightTableName(table.Schema, table.Name), len(chunk))
 		if _, err := tx.ExecContext(bctx, stmt, args...); err != nil {
@@ -814,36 +899,30 @@ func (c *Copier) processBatchBulk(ctx context.Context, rows *sql.Rows, table *Ta
 		maxRowsPerStmt = 1
 	}
 
+	// Pre-compute the INSERT header (reused for all chunks)
+	insertHeader := "INSERT INTO " + utils.QuoteTable(table.Schema, table.Name) + " (" + columnList + ") VALUES "
+
+	// Get a pooled string builder for statement construction
+	sb := getStringBuilder()
+	defer putStringBuilder(sb)
+
 	totalInserted := int64(0)
 	// Insert in chunks if necessary
 	for start := 0; start < len(scanned); start += maxRowsPerStmt {
 		end := min(start+maxRowsPerStmt, len(scanned))
 		chunk := scanned[start:end]
 
-		// Build placeholders ($1..$n) for chunk
-		var sb strings.Builder
-		sb.WriteString("INSERT INTO ")
-		sb.WriteString(utils.QuoteTable(table.Schema, table.Name))
-		sb.WriteString(" (")
-		sb.WriteString(columnList)
-		sb.WriteString(") VALUES ")
+		// Reset builder and construct INSERT statement
+		sb.Reset()
+		sb.WriteString(insertHeader)
 
+		// Build VALUES clause efficiently using pre-allocated integer strings
+		buildValuesClause(sb, numCols, len(chunk), 1)
+
+		// Flatten args: pre-allocate with exact capacity
 		args := make([]any, 0, len(chunk)*numCols)
-		param := 1
-		for i, row := range chunk {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString("(")
-			for j := range numCols {
-				if j > 0 {
-					sb.WriteString(", ")
-				}
-				sb.WriteString(fmt.Sprintf("$%d", param))
-				param++
-				args = append(args, row[j])
-			}
-			sb.WriteString(")")
+		for _, row := range chunk {
+			args = append(args, row...)
 		}
 
 		stmt := sb.String()
