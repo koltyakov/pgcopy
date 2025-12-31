@@ -37,6 +37,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -258,6 +259,24 @@ func (c *Copier) State() *state.CopyState {
 	return c.state
 }
 
+// HasVitalOperations returns true if there are operations in progress that require
+// graceful shutdown (e.g., FK restoration after copy has started).
+// This is used by the CLI to determine shutdown behavior.
+func (c *Copier) HasVitalOperations() bool {
+	if c.state == nil {
+		return false
+	}
+	snap := c.state.GetSnapshot()
+	// Vital operations exist once we've moved past the confirmation phase
+	// (preparing, copying) because FKs may have been dropped.
+	switch snap.Status {
+	case state.StatusPreparing, state.StatusCopying:
+		return true
+	default:
+		return false
+	}
+}
+
 // NewWithState creates a new Copier instance with an existing state
 func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	c := &Copier{
@@ -295,17 +314,17 @@ func NewWithState(config *Config, copyState *state.CopyState) (*Copier, error) {
 	sourceDetails := utils.ExtractConnectionDetails(sourceConnStr)
 	c.state.UpdateConnectionDetails("source", sourceDetails, state.ConnectionStatusConnected)
 
-	// Connect to destination database with retry (handles transient network failures)
-	destConnStr := config.DestConn
-	c.destDB, err = connectWithRetry("pgx", destConnStr, 3)
+	// Connect to target database with retry (handles transient network failures)
+	targetConnStr := config.TargetConn
+	c.destDB, err = connectWithRetry("pgx", targetConnStr, 3)
 	if err != nil {
-		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to dest: %v", err), "copier", true, nil)
-		return nil, fmt.Errorf("failed to connect to destination database: %w", err)
+		c.state.AddError("connection_error", fmt.Sprintf("Failed to connect to target: %v", err), "copier", true, nil)
+		return nil, fmt.Errorf("failed to connect to target database: %w", err)
 	}
 
-	// Update destination connection state
-	destDetails := utils.ExtractConnectionDetails(destConnStr)
-	c.state.UpdateConnectionDetails("destination", destDetails, state.ConnectionStatusConnected)
+	// Update target connection state
+	targetDetails := utils.ExtractConnectionDetails(targetConnStr)
+	c.state.UpdateConnectionDetails("target", targetDetails, state.ConnectionStatusConnected)
 
 	// Configure connection pools for performance (database/sql)
 	c.sourceDB.SetMaxOpenConns(config.Parallel * 2)
@@ -370,8 +389,6 @@ func (c *Copier) Close() {
 
 // Copy performs the data copying operation
 func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored into helpers
-	// Status: preparing
-	c.state.SetStatus(state.StatusPreparing)
 	c.state.AddLog(state.LogLevelInfo, "Starting copy operation", "copier", "", nil)
 
 	// 1. Discovery
@@ -399,13 +416,17 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored
 	// Add planned tables to state and compute totals
 	totalRows := c.addPlannedTablesToState(planned)
 
-	// Optional confirmation
+	// Optional confirmation (status: confirming - safe to exit immediately)
 	if !c.config.SkipBackup && !c.config.DryRun {
+		c.state.SetStatus(state.StatusConfirming)
 		if !c.confirmDataOverwrite(planned, totalRows) { // reuse existing prompt
 			fmt.Println("Operation cancelled by user.")
 			return nil
 		}
 	}
+
+	// Status: preparing (vital operations begin - FK may be dropped)
+	c.state.SetStatus(state.StatusPreparing)
 
 	// Persistence: start log
 	c.startCopyLog(len(planned), totalRows)
@@ -428,17 +449,27 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored
 
 	// Execution
 	err = c.runExecution(ctx, planned)
+
+	// FK cleanup (always try to restore FKs)
+	c.cleanupForeignKeys()
+
+	// Handle execution result
 	if err != nil {
+		// Check if this was a graceful shutdown (context cancelled)
+		if errors.Is(err, context.Canceled) {
+			c.state.SetStatus(state.StatusCancelled)
+			c.state.AddLog(state.LogLevelInfo, "Copy operation cancelled by user", "copier", "", nil)
+			c.finishDisplays()
+			return nil // Not an error - graceful shutdown
+		}
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("copy_error", fmt.Sprintf("Copy operation failed: %v", err), "copier", true, nil)
 		if c.getDisplayMode() == DisplayModeWeb && c.webServer != nil {
 			c.waitForWebAckOnFailure()
 		}
-		// Do not stop interactive display here; allow normal finalization below.
+		c.finishDisplays()
+		return err
 	}
-
-	// FK cleanup
-	c.cleanupForeignKeys()
 
 	// Completion
 	c.state.SetStatus(state.StatusCompleted)
@@ -904,8 +935,8 @@ func ValidateConfig(config *Config) error {
 	if config.SourceConn == "" {
 		return fmt.Errorf("%w: --source connection string must be provided", utils.ErrInvalidConfig)
 	}
-	if config.DestConn == "" {
-		return fmt.Errorf("%w: --dest connection string must be provided", utils.ErrInvalidConfig)
+	if config.TargetConn == "" {
+		return fmt.Errorf("%w: --target connection string must be provided", utils.ErrInvalidConfig)
 	}
 	if config.Parallel < 1 {
 		return fmt.Errorf("%w: parallel workers must be at least 1", utils.ErrInvalidConfig)
@@ -1228,9 +1259,9 @@ func (c *Copier) promptYes() bool {
 
 // getConnectionDisplay extracts and formats connection details for display
 func (c *Copier) getConnectionDisplay() string {
-	// Get the actual destination connection string
-	destConn := c.config.DestConn
+	// Get the actual target connection string
+	targetConn := c.config.TargetConn
 
 	// Extract connection details from the connection string
-	return utils.ExtractConnectionDetails(destConn)
+	return utils.ExtractConnectionDetails(targetConn)
 }

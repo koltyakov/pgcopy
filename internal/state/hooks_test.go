@@ -366,13 +366,13 @@ func TestCopyState_UpdateConnectionDetails(t *testing.T) {
 		t.Error("Expected LastPing to be set")
 	}
 
-	state.UpdateConnectionDetails("destination", "remote:5432/otherdb", ConnectionStatusConnecting)
+	state.UpdateConnectionDetails("target", "remote:5432/otherdb", ConnectionStatusConnecting)
 
-	if state.Connections.Destination.Display != "remote:5432/otherdb" {
-		t.Errorf("Expected dest display 'remote:5432/otherdb', got '%s'", state.Connections.Destination.Display)
+	if state.Connections.Target.Display != "remote:5432/otherdb" {
+		t.Errorf("Expected target display 'remote:5432/otherdb', got '%s'", state.Connections.Target.Display)
 	}
-	if state.Connections.Destination.Status != ConnectionStatusConnecting {
-		t.Errorf("Expected dest status Connecting, got '%s'", state.Connections.Destination.Status)
+	if state.Connections.Target.Status != ConnectionStatusConnecting {
+		t.Errorf("Expected target status Connecting, got '%s'", state.Connections.Target.Status)
 	}
 }
 

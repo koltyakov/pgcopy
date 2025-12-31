@@ -276,14 +276,23 @@ func (c *Copier) copyTablesParallel(ctx context.Context, tables []*TableInfo) er
 		close(errChan)
 	}()
 
-	// Collect any errors
+	// Collect any errors (filter out context cancellation during graceful shutdown)
 	var collectedErrors []error
 	for err := range errChan {
 		if err != nil {
+			// Skip context.Canceled errors - these are expected during graceful shutdown
+			if errors.Is(err, context.Canceled) {
+				continue
+			}
 			collectedErrors = append(collectedErrors, err)
 			// Use state system for error tracking
 			c.state.AddError("copy_error", err.Error(), "copier", false, nil)
 		}
+	}
+
+	// If context was cancelled (graceful shutdown), don't report errors as failures
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	if len(collectedErrors) > 0 {
@@ -306,8 +315,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		// Check for cancellation before starting
 		select {
 		case <-ctx.Done():
-			errChan <- ctx.Err()
-			return
+			return // Don't send error, just exit - context cancellation is handled at collector level
 		default:
 		}
 
@@ -321,6 +329,11 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting copy of table %s.%s", table.Schema, table.Name), "worker", table.Schema+"."+table.Name, nil)
 
 		if err := c.copyTable(ctx, table); err != nil {
+			// Skip logging/reporting errors if context was cancelled (graceful shutdown)
+			if ctx.Err() != nil {
+				c.state.UpdateTableStatus(table.Schema, table.Name, state.TableStatusCancelled)
+				return
+			}
 			c.logger.Error("Error copying table %s: %v", utils.HighlightTableName(table.Schema, table.Name), err)
 			errChan <- fmt.Errorf("failed to copy table %s.%s: %w", table.Schema, table.Name, err)
 
@@ -345,8 +358,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		var ok bool
 		select {
 		case <-ctx.Done():
-			errChan <- ctx.Err()
-			return
+			return // Context cancelled, exit gracefully
 		case table, ok = <-tableChan:
 			if !ok { // channel closed
 				return
@@ -367,8 +379,7 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 		for {
 			select {
 			case <-ctx.Done():
-				errChan <- ctx.Err()
-				return
+				return // Context cancelled, exit gracefully
 			case next, ok2 := <-tableChan:
 				if !ok2 { // channel exhausted
 					return

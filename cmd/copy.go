@@ -56,11 +56,19 @@ func findAvailablePort(startPort int) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
+// ShutdownInfo provides context for graceful shutdown decisions.
+type ShutdownInfo interface {
+	// HasVitalOperations returns true if there are operations that need graceful completion
+	// (e.g., FK restoration after copy has started).
+	HasVitalOperations() bool
+}
+
 // setupTwoPhaseShutdown sets up signal handling with two-phase shutdown.
 // First signal: graceful shutdown, attempts to finish vital operations (FK restore).
 // Second signal: force quit immediately.
+// If info is provided and HasVitalOperations() returns false, exits immediately on first signal.
 // Returns a channel that receives true on first signal (graceful shutdown requested).
-func setupTwoPhaseShutdown(cancel context.CancelFunc) <-chan struct{} {
+func setupTwoPhaseShutdown(cancel context.CancelFunc, info ShutdownInfo) <-chan struct{} {
 	shutdownChan := make(chan struct{}, 1)
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -70,13 +78,20 @@ func setupTwoPhaseShutdown(cancel context.CancelFunc) <-chan struct{} {
 	go func() {
 		for sig := range sigChan {
 			if shutdownRequested.CompareAndSwap(false, true) {
-				// First signal: graceful shutdown
-				fmt.Printf("\n⏹️  Shutdown requested (%v). Finishing vital operations...\n", sig)
-				fmt.Printf("   Press Ctrl-C again to force quit immediately.\n")
-				cancel() // Cancel the context to stop new work
-				select {
-				case shutdownChan <- struct{}{}:
-				default:
+				// First signal: check if there are vital operations
+				hasVital := info != nil && info.HasVitalOperations()
+
+				if hasVital {
+					fmt.Printf("\n⏹️  Shutdown requested (%v). Finishing vital operations...\n", sig)
+					fmt.Printf("   Press Ctrl-C again to force quit immediately.\n")
+					cancel()
+					select {
+					case shutdownChan <- struct{}{}:
+					default:
+					}
+				} else {
+					fmt.Printf("\n⏹️  Cancelled.\n")
+					os.Exit(0)
 				}
 			} else {
 				// Second signal: force quit
@@ -92,23 +107,28 @@ func setupTwoPhaseShutdown(cancel context.CancelFunc) <-chan struct{} {
 // copyCmd represents the copy command
 var copyCmd = &cobra.Command{
 	Use:   "copy",
-	Short: "Copy data from source to destination database",
-	Long: `Copy data from source PostgreSQL database to destination PostgreSQL database.
+	Short: "Copy data from source to target database",
+	Long: `Copy data from source PostgreSQL database to target PostgreSQL database.
 Both databases must have the same schema structure.
 
 Examples:
-  pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --dest "postgres://user:pass@localhost:5433/destdb"
-  pgcopy copy -s "postgres://user:pass@host1/db1" -d "postgres://user:pass@host2/db2" --parallel 4
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --batch-size 5000
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output plain       # Plain mode for CI/headless (default)
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output progress    # Progress bar mode
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output interactive # Interactive mode with live table progress
-  pgcopy copy --source "postgres://user:pass@source:5432/db" --dest "postgres://user:pass@dest:5432/db" --output web         # Web interface mode with real-time monitoring
-  pgcopy copy -s "..." -d "..." --exclude "temp_*,*_logs,*_cache"        # Exclude with wildcards
-  pgcopy copy -s "..." -d "..." --include "user_*,order_*"               # Include with wildcards`,
+  pgcopy copy --source "postgres://user:pass@localhost:5432/sourcedb" --target "postgres://user:pass@localhost:5433/targetdb"
+  pgcopy copy -s "postgres://user:pass@host1/db1" -t "postgres://user:pass@host2/db2" --parallel 4
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --batch-size 5000
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output plain       # Plain mode for CI/headless (default)
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output progress    # Progress bar mode
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output interactive # Interactive mode with live table progress
+  pgcopy copy --source "postgres://user:pass@source:5432/db" --target "postgres://user:pass@target:5432/db" --output web         # Web interface mode with real-time monitoring
+  pgcopy copy -s "..." -t "..." --exclude "temp_*,*_logs,*_cache"        # Exclude with wildcards
+  pgcopy copy -s "..." -t "..." --include "user_*,order_*"               # Include with wildcards`,
 	Run: func(cmd *cobra.Command, _ []string) {
 		sourceConn, _ := cmd.Flags().GetString("source")
-		destConn, _ := cmd.Flags().GetString("dest")
+		// Support both --target (new) and --dest (deprecated, hidden)
+		targetConn, _ := cmd.Flags().GetString("target")
+		deprecatedDest, _ := cmd.Flags().GetString("dest")
+		if targetConn == "" && deprecatedDest != "" {
+			targetConn = deprecatedDest
+		}
 		parallel, _ := cmd.Flags().GetInt("parallel")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
 		excludeTables, _ := cmd.Flags().GetStringSlice("exclude")
@@ -142,7 +162,7 @@ Examples:
 
 		config := &copier.Config{
 			SourceConn:    sourceConn,
-			DestConn:      destConn,
+			TargetConn:    targetConn,
 			Parallel:      parallel,
 			BatchSize:     batchSize,
 			ExcludeTables: excludeTables,
@@ -185,8 +205,8 @@ Examples:
 			}
 			defer stateCopier.Close()
 
-			// Setup two-phase graceful shutdown
-			shutdownChan := setupTwoPhaseShutdown(cancel)
+			// Setup two-phase graceful shutdown (pass copier for vital ops check)
+			shutdownChan := setupTwoPhaseShutdown(cancel, stateCopier)
 
 			// Start copy operation in a goroutine
 			copyDone := make(chan error, 1)
@@ -255,8 +275,8 @@ Examples:
 			}
 			defer dataCopier.Close()
 
-			// Setup two-phase graceful shutdown
-			shutdownChan := setupTwoPhaseShutdown(cancel)
+			// Setup two-phase graceful shutdown (pass copier for vital ops check)
+			shutdownChan := setupTwoPhaseShutdown(cancel, dataCopier)
 
 			done := make(chan error, 1)
 			go func() { done <- dataCopier.Copy(ctx) }()
@@ -289,7 +309,10 @@ func init() {
 	rootCmd.AddCommand(copyCmd)
 
 	copyCmd.Flags().StringP("source", "s", "", "Source database connection string (postgres://user:pass@host:port/dbname)")
-	copyCmd.Flags().StringP("dest", "d", "", "Destination database connection string (postgres://user:pass@host:port/dbname)")
+	copyCmd.Flags().StringP("target", "t", "", "Target database connection string (postgres://user:pass@host:port/dbname)")
+	// Deprecated: --dest is kept for backwards compatibility but hidden from help
+	copyCmd.Flags().StringP("dest", "d", "", "Deprecated: use --target instead")
+	_ = copyCmd.Flags().MarkHidden("dest")
 	copyCmd.Flags().IntP("parallel", "p", 4, "Number of parallel workers")
 	copyCmd.Flags().Int("batch-size", 1000, "Batch size for data copying")
 	copyCmd.Flags().StringSlice("exclude", []string{}, "Tables to exclude from copying (supports wildcards: temp_*,*_logs)")

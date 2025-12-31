@@ -6,7 +6,7 @@ DEST_DB="postgres://postgres:postgres@localhost:5452/postgres"
 
 pgcopy copy \
   --source "$SOURCE_DB" \
-  --dest "$DEST_DB" \
+  --target "$DEST_DB" \
   --parallel 8 \
   --batch-size 5000 \
   --exclude "logs,sessions,cache_entries,temp_files" \

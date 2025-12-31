@@ -526,10 +526,10 @@ func (s *CopyState) UpdateConnectionDetails(connType, display string, status Con
 		s.Connections.Source.Display = display
 		s.Connections.Source.Status = status
 		s.Connections.Source.LastPing = &now
-	case "destination":
-		s.Connections.Destination.Display = display
-		s.Connections.Destination.Status = status
-		s.Connections.Destination.LastPing = &now
+	case "target":
+		s.Connections.Target.Display = display
+		s.Connections.Target.Status = status
+		s.Connections.Target.LastPing = &now
 	}
 }
 

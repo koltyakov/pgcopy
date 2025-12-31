@@ -15,7 +15,7 @@ By default, pgcopy shows a confirmation prompt with a summary of affected tables
 ```bash
 pgcopy copy \
   --source "postgres://user:pass@source:5432/db" \
-  --dest   "postgres://user:pass@dest:5432/db" \
+  --target   "postgres://user:pass@dest:5432/db" \
   --skip-backup
 ```
 

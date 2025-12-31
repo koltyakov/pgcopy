@@ -24,13 +24,13 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 		}
 	}()
 
-	dstConn, err := pgx.Connect(ctx, c.config.DestConn)
+	dstConn, err := pgx.Connect(ctx, c.config.TargetConn)
 	if err != nil {
-		return fmt.Errorf("pgx connect dest: %w", err)
+		return fmt.Errorf("pgx connect target: %w", err)
 	}
 	defer func() {
 		if cerr := dstConn.Close(ctx); cerr != nil {
-			c.logger.Warn("Error closing destination pgx connection: %v", cerr)
+			c.logger.Warn("Error closing target pgx connection: %v", cerr)
 		}
 	}()
 
@@ -127,7 +127,7 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 		}()
 		progCtx, cancel := context.WithCancel(ctx)
 		defer cancel()
-		conn, err := pgx.Connect(progCtx, c.config.DestConn)
+		conn, err := pgx.Connect(progCtx, c.config.TargetConn)
 		if err != nil {
 			// Can't poll, just return silently
 			return
