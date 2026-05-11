@@ -114,6 +114,16 @@ func TestValidateConfig(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "same source and target database",
+			config: &Config{
+				SourceConn: "postgres://user:pass@localhost/app?sslmode=disable",
+				TargetConn: "postgres://other:secret@localhost:5432/app?sslmode=require",
+				Parallel:   2,
+				BatchSize:  1000,
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

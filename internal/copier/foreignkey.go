@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -38,6 +39,8 @@ type ForeignKey struct {
 	ReferencedColumns []string
 	OnDelete          string
 	OnUpdate          string
+	ConstraintDef     string // pg_get_constraintdef output, preserving FK options
+	WasValidated      bool
 	Definition        string // Full CREATE CONSTRAINT statement
 }
 
@@ -120,6 +123,7 @@ func (fkm *ForeignKeyManager) RestoreAllForeignKeys() error {
 	// Sort by dependency for safer recreation
 	sorted := fkm.sortKeysByDependency(snapshot)
 	restored := 0
+	var restoreErrors []error
 	for _, fk := range sorted {
 		constraintKey := fmt.Sprintf("%s.%s.%s", fk.Schema, fk.Table, fk.ConstraintName)
 		// Mark as processed so per-table restore won't redo it
@@ -176,11 +180,15 @@ func (fkm *ForeignKeyManager) RestoreAllForeignKeys() error {
 			fkm.mu.Unlock()
 		} else {
 			fkm.logger.Warn("Failed to restore FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), lastErr)
+			restoreErrors = append(restoreErrors, fmt.Errorf("failed to restore FK %s on %s.%s: %w", fk.ConstraintName, fk.Schema, fk.Table, lastErr))
 		}
 	}
 
 	if restored > 0 {
 		fkm.logger.Info("Restored %s foreign key constraints globally", utils.HighlightNumber(restored))
+	}
+	if len(restoreErrors) > 0 {
+		return errors.Join(append([]error{fmt.Errorf("%w: failed to restore %d foreign key constraint(s)", utils.ErrFKRecoveryFailed, len(restoreErrors))}, restoreErrors...)...)
 	}
 	return nil
 }
@@ -281,32 +289,49 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 	// also drop constraints on tables not included in the copy set but referencing
 	// tables we are about to truncate.
 	query := `
-		SELECT 
-			tc.constraint_name,
-			tc.table_schema,
-			tc.table_name,
-			string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position) as columns,
-			ccu.table_schema AS referenced_schema,
-			ccu.table_name AS referenced_table,
-			string_agg(ccu.column_name, ',' ORDER BY kcu.ordinal_position) as referenced_columns,
-			rc.delete_rule,
-			rc.update_rule
-		FROM information_schema.table_constraints tc
-		JOIN information_schema.key_column_usage kcu 
-			ON tc.constraint_name = kcu.constraint_name 
-			AND tc.table_schema = kcu.table_schema
-		JOIN information_schema.constraint_column_usage ccu 
-			ON ccu.constraint_name = tc.constraint_name 
-			AND ccu.table_schema = tc.table_schema
-		JOIN information_schema.referential_constraints rc 
-			ON tc.constraint_name = rc.constraint_name 
-			AND tc.table_schema = rc.constraint_schema
-		WHERE tc.constraint_type = 'FOREIGN KEY'
-			AND ((tc.table_schema || '.' || tc.table_name) IN (` + inClause + `)
-				 OR (ccu.table_schema || '.' || ccu.table_name) IN (` + inClause + `))
-		GROUP BY tc.constraint_name, tc.table_schema, tc.table_name, 
-			ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule
-		ORDER BY tc.table_schema, tc.table_name, tc.constraint_name`
+		SELECT
+			con.conname,
+			ns.nspname,
+			rel.relname,
+			array_to_string(ARRAY(
+				SELECT att.attname
+				FROM unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord)
+				JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = cols.attnum
+				ORDER BY cols.ord
+			), ',') AS columns,
+			ref_ns.nspname AS referenced_schema,
+			ref_rel.relname AS referenced_table,
+			array_to_string(ARRAY(
+				SELECT att.attname
+				FROM unnest(con.confkey) WITH ORDINALITY AS cols(attnum, ord)
+				JOIN pg_attribute att ON att.attrelid = con.confrelid AND att.attnum = cols.attnum
+				ORDER BY cols.ord
+			), ',') AS referenced_columns,
+			CASE con.confdeltype
+				WHEN 'a' THEN 'NO ACTION'
+				WHEN 'r' THEN 'RESTRICT'
+				WHEN 'c' THEN 'CASCADE'
+				WHEN 'n' THEN 'SET NULL'
+				WHEN 'd' THEN 'SET DEFAULT'
+			END AS delete_rule,
+			CASE con.confupdtype
+				WHEN 'a' THEN 'NO ACTION'
+				WHEN 'r' THEN 'RESTRICT'
+				WHEN 'c' THEN 'CASCADE'
+				WHEN 'n' THEN 'SET NULL'
+				WHEN 'd' THEN 'SET DEFAULT'
+			END AS update_rule,
+			pg_get_constraintdef(con.oid, false) AS constraint_def,
+			con.convalidated
+		FROM pg_constraint con
+		JOIN pg_class rel ON rel.oid = con.conrelid
+		JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+		JOIN pg_class ref_rel ON ref_rel.oid = con.confrelid
+		JOIN pg_namespace ref_ns ON ref_ns.oid = ref_rel.relnamespace
+		WHERE con.contype = 'f'
+			AND ((ns.nspname || '.' || rel.relname) IN (` + inClause + `)
+				 OR (ref_ns.nspname || '.' || ref_rel.relname) IN (` + inClause + `))
+		ORDER BY ns.nspname, rel.relname, con.conname`
 
 	ctx, cancel := fkm.newCtx(fkDetectTimeout)
 	defer cancel()
@@ -324,6 +349,7 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 	for rows.Next() {
 		var fk ForeignKey
 		var columns, referencedColumns string
+		var constraintDef string
 
 		err := rows.Scan(
 			&fk.ConstraintName,
@@ -335,6 +361,8 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 			&referencedColumns,
 			&fk.OnDelete,
 			&fk.OnUpdate,
+			&constraintDef,
+			&fk.WasValidated,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to scan foreign key: %w", err)
@@ -342,6 +370,7 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 
 		fk.Columns = strings.Split(columns, ",")
 		fk.ReferencedColumns = strings.Split(referencedColumns, ",")
+		fk.ConstraintDef = constraintDef
 
 		// Build the constraint definition for recreation
 		fk.Definition = fkm.buildConstraintDefinition(&fk)
@@ -355,6 +384,13 @@ func (fkm *ForeignKeyManager) DetectForeignKeys(tables []*TableInfo) error {
 
 // buildConstraintDefinition creates the ALTER TABLE statement to recreate the FK
 func (fkm *ForeignKeyManager) buildConstraintDefinition(fk *ForeignKey) string {
+	if strings.TrimSpace(fk.ConstraintDef) != "" {
+		return fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s",
+			utils.QuoteTable(fk.Schema, fk.Table),
+			utils.QuoteIdent(fk.ConstraintName),
+			ensureConstraintNotValid(fk.ConstraintDef))
+	}
+
 	var builder strings.Builder
 
 	builder.WriteString(fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s ",
@@ -390,11 +426,26 @@ func (fkm *ForeignKeyManager) buildConstraintDefinition(fk *ForeignKey) string {
 	return builder.String()
 }
 
+func ensureConstraintNotValid(def string) string {
+	def = strings.TrimSpace(strings.TrimSuffix(def, ";"))
+	fields := strings.Fields(def)
+	if len(fields) >= 2 && strings.EqualFold(fields[len(fields)-2], "NOT") && strings.EqualFold(fields[len(fields)-1], "VALID") {
+		return def
+	}
+	return def + " NOT VALID"
+}
+
 // TryUseReplicaMode attempts to use replica mode for FK handling
 func (fkm *ForeignKeyManager) TryUseReplicaMode() error {
 	ctx, cancel := fkm.newCtx(fkReplicaSetTimeout)
 	defer cancel()
-	_, err := fkm.db.ExecContext(ctx, "SET session_replication_role = replica")
+	tx, err := fkm.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to test replica mode permissions: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	_, err = tx.ExecContext(ctx, "SET LOCAL session_replication_role = replica")
 	if err != nil {
 		fkm.logger.Warn("Cannot use replica mode (requires superuser), will drop/recreate FKs: %v", err)
 		fkm.logger.Info("FK definitions will be backed up to: %s", fkm.backupFile)
@@ -516,42 +567,71 @@ func (fkm *ForeignKeyManager) computeFKSignature(fk *ForeignKey) string {
 	base := fmt.Sprintf("%s.%s|%s|%s.%s|%s|del:%s|upd:%s",
 		fk.Schema, fk.Table, cols, fk.ReferencedSchema, fk.ReferencedTable, refCols, onDelete, onUpdate,
 	)
+	if def := normalizeConstraintDef(fk.ConstraintDef); def != "" {
+		base += "|def:" + def
+	}
 	// Hash to compact and stabilize the signature length
 	sum := sha256.Sum256([]byte(base))
 	return hex.EncodeToString(sum[:])
 }
 
+func normalizeConstraintDef(def string) string {
+	fields := strings.Fields(strings.TrimSpace(strings.TrimSuffix(def, ";")))
+	if len(fields) >= 2 && strings.EqualFold(fields[len(fields)-2], "NOT") && strings.EqualFold(fields[len(fields)-1], "VALID") {
+		fields = fields[:len(fields)-2]
+	}
+	return strings.Join(fields, " ")
+}
+
 // getExistingFKSignature returns the signature of an existing FK in the DB if present.
 func (fkm *ForeignKeyManager) getExistingFKSignature(schema, table, constraint string) (string, bool, error) {
-	// Query current FK definition parts for the given constraint
-	// #nosec G202 - identifiers are used via parameters
+	// Query current FK definition parts for the given constraint.
 	query := `
-		SELECT 
-			string_agg(kcu.column_name, ',' ORDER BY kcu.ordinal_position) as columns,
-			ccu.table_schema AS referenced_schema,
-			ccu.table_name AS referenced_table,
-			string_agg(ccu.column_name, ',' ORDER BY kcu.ordinal_position) as referenced_columns,
-			rc.delete_rule,
-			rc.update_rule
-		FROM information_schema.table_constraints tc
-		JOIN information_schema.key_column_usage kcu 
-			ON tc.constraint_name = kcu.constraint_name 
-			AND tc.table_schema = kcu.table_schema
-		JOIN information_schema.constraint_column_usage ccu 
-			ON ccu.constraint_name = tc.constraint_name 
-			AND ccu.table_schema = tc.table_schema
-		JOIN information_schema.referential_constraints rc 
-			ON tc.constraint_name = rc.constraint_name 
-			AND tc.table_schema = rc.constraint_schema
-		WHERE tc.constraint_type = 'FOREIGN KEY'
-		  AND tc.table_schema = $1 AND tc.table_name = $2 AND tc.constraint_name = $3
-		GROUP BY ccu.table_schema, ccu.table_name, rc.delete_rule, rc.update_rule`
+		SELECT
+			array_to_string(ARRAY(
+				SELECT att.attname
+				FROM unnest(con.conkey) WITH ORDINALITY AS cols(attnum, ord)
+				JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = cols.attnum
+				ORDER BY cols.ord
+			), ',') AS columns,
+			ref_ns.nspname AS referenced_schema,
+			ref_rel.relname AS referenced_table,
+			array_to_string(ARRAY(
+				SELECT att.attname
+				FROM unnest(con.confkey) WITH ORDINALITY AS cols(attnum, ord)
+				JOIN pg_attribute att ON att.attrelid = con.confrelid AND att.attnum = cols.attnum
+				ORDER BY cols.ord
+			), ',') AS referenced_columns,
+			CASE con.confdeltype
+				WHEN 'a' THEN 'NO ACTION'
+				WHEN 'r' THEN 'RESTRICT'
+				WHEN 'c' THEN 'CASCADE'
+				WHEN 'n' THEN 'SET NULL'
+				WHEN 'd' THEN 'SET DEFAULT'
+			END AS delete_rule,
+			CASE con.confupdtype
+				WHEN 'a' THEN 'NO ACTION'
+				WHEN 'r' THEN 'RESTRICT'
+				WHEN 'c' THEN 'CASCADE'
+				WHEN 'n' THEN 'SET NULL'
+				WHEN 'd' THEN 'SET DEFAULT'
+			END AS update_rule,
+			pg_get_constraintdef(con.oid, false) AS constraint_def,
+			con.convalidated
+		FROM pg_constraint con
+		JOIN pg_class rel ON rel.oid = con.conrelid
+		JOIN pg_namespace ns ON ns.oid = rel.relnamespace
+		JOIN pg_class ref_rel ON ref_rel.oid = con.confrelid
+		JOIN pg_namespace ref_ns ON ref_ns.oid = ref_rel.relnamespace
+		WHERE con.contype = 'f'
+		  AND ns.nspname = $1 AND rel.relname = $2 AND con.conname = $3`
 
 	ctx, cancel := fkm.newCtx(fkDetectTimeout)
 	defer cancel()
 	row := fkm.db.QueryRowContext(ctx, query, schema, table, constraint)
-	var cols, refSchema, refTable, refCols, del, upd string
-	if err := row.Scan(&cols, &refSchema, &refTable, &refCols, &del, &upd); err != nil {
+	var cols, refSchema, refTable, refCols, del, upd, constraintDef string
+	var wasValidated bool
+	if err := row.Scan(&cols, &refSchema, &refTable, &refCols, &del, &upd, &constraintDef, &wasValidated); err != nil {
 		if err == sql.ErrNoRows {
 			return "", false, nil
 		}
@@ -569,6 +649,8 @@ func (fkm *ForeignKeyManager) getExistingFKSignature(schema, table, constraint s
 		ReferencedColumns: strings.Split(refCols, ","),
 		OnDelete:          del,
 		OnUpdate:          upd,
+		ConstraintDef:     constraintDef,
+		WasValidated:      wasValidated,
 	}
 	return fkm.computeFKSignature(&tmp), true, nil
 }
@@ -690,6 +772,9 @@ func (fkm *ForeignKeyManager) IsUsingReplicaMode() bool {
 func (fkm *ForeignKeyManager) CleanupBackupFile() error {
 	fkm.mu.Lock()
 	defer fkm.mu.Unlock()
+	if len(fkm.droppedKeys) > 0 {
+		return fmt.Errorf("%w: %d foreign key constraint(s) remain unrestored; preserving backup file %s", utils.ErrFKRecoveryFailed, len(fkm.droppedKeys), fkm.backupFile)
+	}
 
 	if _, err := os.Stat(fkm.backupFile); os.IsNotExist(err) {
 		return nil // File doesn't exist
@@ -701,10 +786,6 @@ func (fkm *ForeignKeyManager) CleanupBackupFile() error {
 
 // RecoverFromBackupFile attempts to restore FKs from backup file if they exist but weren't tracked
 func (fkm *ForeignKeyManager) RecoverFromBackupFile() error {
-	if fkm.IsUsingReplicaMode() {
-		return nil
-	}
-
 	// Check if backup file exists
 	if _, err := os.Stat(fkm.backupFile); os.IsNotExist(err) {
 		return nil // No backup file to recover from
@@ -783,7 +864,11 @@ func (fkm *ForeignKeyManager) ValidateRestoredForeignKeys() error {
 
 	// Validate each
 	validated := 0
+	var validationErrors []error
 	for _, fk := range toValidate {
+		if !fk.WasValidated {
+			continue
+		}
 		stmt := fmt.Sprintf("ALTER TABLE %s VALIDATE CONSTRAINT %s", utils.QuoteTable(fk.Schema, fk.Table), utils.QuoteIdent(fk.ConstraintName))
 		ctx, cancel := fkm.newCtx(fkRestoreTimeout)
 		_, err := fkm.db.ExecContext(ctx, stmt)
@@ -791,6 +876,7 @@ func (fkm *ForeignKeyManager) ValidateRestoredForeignKeys() error {
 		if err != nil {
 			// Log and continue; these may be already valid or conflicting
 			fkm.logger.Warn("Failed to validate FK %s on %s: %v", utils.HighlightFKName(fk.ConstraintName), utils.HighlightTableName(fk.Schema, fk.Table), err)
+			validationErrors = append(validationErrors, fmt.Errorf("failed to validate FK %s on %s.%s: %w", fk.ConstraintName, fk.Schema, fk.Table, err))
 			continue
 		}
 		validated++
@@ -802,5 +888,8 @@ func (fkm *ForeignKeyManager) ValidateRestoredForeignKeys() error {
 	fkm.mu.Lock()
 	fkm.restoredKeys = fkm.restoredKeys[:0]
 	fkm.mu.Unlock()
+	if len(validationErrors) > 0 {
+		return errors.Join(append([]error{fmt.Errorf("%w: failed to validate %d foreign key constraint(s)", utils.ErrFKRecoveryFailed, len(validationErrors))}, validationErrors...)...)
+	}
 	return nil
 }

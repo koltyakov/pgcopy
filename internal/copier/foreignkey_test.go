@@ -1,6 +1,8 @@
 package copier
 
 import (
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -44,6 +46,24 @@ func TestForeignKeyManager_sortKeysByDependency(t *testing.T) {
 	// Verify we have the same number of keys
 	if len(sorted) != len(keys) {
 		t.Errorf("Expected %d keys, got %d", len(keys), len(sorted))
+	}
+}
+
+func TestForeignKeyManager_buildConstraintDefinition_PreservesCatalogDefinition(t *testing.T) {
+	fkm := &ForeignKeyManager{}
+
+	fk := &ForeignKey{
+		ConstraintName: "fk_deferred",
+		Schema:         "public",
+		Table:          "orders",
+		ConstraintDef:  `FOREIGN KEY (user_id) REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED`,
+	}
+
+	definition := fkm.buildConstraintDefinition(fk)
+	expected := `ALTER TABLE "public"."orders" ADD CONSTRAINT "fk_deferred" FOREIGN KEY (user_id) REFERENCES users(id) DEFERRABLE INITIALLY DEFERRED NOT VALID`
+
+	if definition != expected {
+		t.Errorf("Expected:\n%s\nGot:\n%s", expected, definition)
 	}
 }
 
@@ -318,6 +338,26 @@ func TestNewForeignKeyManager_NoTimeouts(t *testing.T) {
 
 	if !fkm.noTimeouts {
 		t.Error("Expected noTimeouts to be true")
+	}
+}
+
+func TestForeignKeyManager_CleanupBackupFile_PreservesFileWhenKeysRemain(t *testing.T) {
+	backupFile := filepath.Join(t.TempDir(), ".fk_backup.sql")
+	if err := os.WriteFile(backupFile, []byte("ALTER TABLE x ADD CONSTRAINT y FOREIGN KEY (z) REFERENCES a(b);"), 0600); err != nil {
+		t.Fatalf("failed to create backup file: %v", err)
+	}
+
+	fkm := &ForeignKeyManager{
+		backupFile:  backupFile,
+		droppedKeys: []ForeignKey{{Schema: "public", Table: "orders", ConstraintName: "fk_orders_users"}},
+		logger:      utils.NewSilentLogger(),
+	}
+
+	if err := fkm.CleanupBackupFile(); err == nil {
+		t.Fatal("expected cleanup error while dropped keys remain")
+	}
+	if _, err := os.Stat(backupFile); err != nil {
+		t.Fatalf("backup file should be preserved: %v", err)
 	}
 }
 

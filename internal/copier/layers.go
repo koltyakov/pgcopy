@@ -2,6 +2,7 @@ package copier
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/koltyakov/pgcopy/internal/state"
@@ -71,16 +72,26 @@ func (p *defaultPlanner) PlanLayers(tables []*TableInfo) ([][]*TableInfo, error)
 type defaultExecutor struct{ c *Copier }
 
 func (e *defaultExecutor) Execute(ctx context.Context, tables []*TableInfo) error {
-	// Build dependency layers via planner (for visibility/metrics), but ignore sequencing for now
-	if layers, err := e.c.planner.PlanLayers(tables); err == nil {
-		if len(layers) > 0 {
-			e.c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Dependency graph constructed: %d layer(s). Sequencing temporarily disabled; processing in original order.", len(layers)), "copier", "", nil)
-		} else {
-			e.c.state.AddLog(state.LogLevelInfo, "Dependency graph constructed: 0 layers (processing in original order)", "copier", "", nil)
+	layers, err := e.c.planner.PlanLayers(tables)
+	if err != nil || len(layers) == 0 {
+		return e.c.copyTablesParallel(ctx, tables)
+	}
+
+	e.c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Dependency graph constructed: %d layer(s); processing each layer sequentially.", len(layers)), "copier", "", nil)
+	var layerErrors []error
+	for i, layer := range layers {
+		if len(layer) == 0 {
+			continue
+		}
+		e.c.state.AddLog(state.LogLevelInfo, fmt.Sprintf("Starting dependency layer %d/%d with %d table(s)", i+1, len(layers), len(layer)), "copier", "", nil)
+		if err := e.c.copyTablesParallel(ctx, layer); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
+			layerErrors = append(layerErrors, err)
 		}
 	}
-	// Process all tables in one parallel run (original/planned order)
-	return e.c.copyTablesParallel(ctx, tables)
+	return errors.Join(layerErrors...)
 }
 
 // defaultReporter is a no-op placeholder.

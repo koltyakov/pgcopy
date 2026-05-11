@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -119,14 +120,16 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	// Uses a separate connection because dstConn is busy with COPY FROM. If the view isn't available,
 	// or no row is visible, the poller exits quietly.
 	stopPoll := make(chan struct{})
+	pollDone := make(chan struct{})
+	progCtx, cancelPoll := context.WithCancel(ctx)
+	var progressRows atomic.Int64
 	go func(schema, name string, pid uint32, _ int64) {
+		defer close(pollDone)
 		defer func() {
 			if r := recover(); r != nil {
 				c.logger.Error("Progress poller goroutine panicked: %v", r)
 			}
 		}()
-		progCtx, cancel := context.WithCancel(ctx)
-		defer cancel()
 		conn, err := pgx.Connect(progCtx, c.config.TargetConn)
 		if err != nil {
 			// Can't poll, just return silently
@@ -160,19 +163,26 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 				if processed > last {
 					inc := processed - last
 					last = processed
-					c.updateTableProgress(schema, name, inc)
+					progressRows.Store(processed)
+					c.updateTableProgress(schema, name, processed)
 					c.updateProgress(inc)
 				}
 			}
 		}
 	}(table.Schema, table.Name, dstConn.PgConn().PID(), table.TotalRows)
+	stopProgressPoll := func() {
+		cancelPoll()
+		close(stopPoll)
+		<-pollDone
+	}
 
 	startIn := time.Now()
-	if _, err := tx.Conn().PgConn().CopyFrom(ctx, r, copyInSQL); err != nil {
-		close(stopPoll)
+	tag, err := tx.Conn().PgConn().CopyFrom(ctx, r, copyInSQL)
+	if err != nil {
+		stopProgressPoll()
 		return fmt.Errorf("copy in failed: %w", err)
 	}
-	close(stopPoll)
+	stopProgressPoll()
 	// Commit the transaction so TRUNCATE + COPY are atomic
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit dest tx failed: %w", err)
@@ -180,10 +190,15 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	committed = true
 	c.logger.Info("Applied streamed data to destination for %s in %s", utils.HighlightTableName(table.Schema, table.Name), utils.FormatDuration(time.Since(startIn)))
 
-	// We cannot easily update per-row progress in binary streaming mode without decoding.
-	// Mark table progress as complete here; higher-level code will log completion.
-	c.updateTableProgress(table.Schema, table.Name, table.TotalRows)
-	c.updateProgress(table.TotalRows)
+	actualRows := tag.RowsAffected()
+	trackedRows := progressRows.Load()
+	if actualRows < trackedRows {
+		actualRows = trackedRows
+	}
+	c.updateTableProgress(table.Schema, table.Name, actualRows)
+	if actualRows > trackedRows {
+		c.updateProgress(actualRows - trackedRows)
+	}
 
 	return nil
 }

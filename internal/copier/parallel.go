@@ -403,11 +403,6 @@ func (c *Copier) worker(ctx context.Context, tableChan <-chan *TableInfo, errCha
 func (c *Copier) copyTable(ctx context.Context, table *TableInfo) error {
 	startTime := time.Now()
 
-	if table.TotalRows == 0 {
-		c.logger.Info("Skipping empty table %s", utils.HighlightTableName(table.Schema, table.Name))
-		return nil
-	}
-
 	c.logger.Info("Copying table %s (%s rows)", utils.HighlightTableName(table.Schema, table.Name), utils.HighlightNumber(utils.FormatNumber(table.TotalRows)))
 
 	// Clear destination table first. For streaming pipeline we perform TRUNCATE inside
@@ -557,13 +552,7 @@ func (c *Copier) clearDestinationTable(ctx context.Context, table *TableInfo) er
 
 // copyTableData copies table data in batches
 func (c *Copier) copyTableData(ctx context.Context, table *TableInfo) error { //nolint:funlen,gocognit
-	columnList := strings.Join(func() []string {
-		quotedColumns := make([]string, len(table.Columns))
-		for i, col := range table.Columns {
-			quotedColumns[i] = fmt.Sprintf("\"%s\"", col)
-		}
-		return quotedColumns
-	}(), ", ")
+	columnList := utils.QuoteJoinIdents(table.Columns)
 
 	// Snapshot transaction (optional). We create a dedicated connection/tx to ensure
 	// REPEATABLE READ isolation so pagination isn't affected by concurrent inserts.

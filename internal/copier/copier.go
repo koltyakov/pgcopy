@@ -40,6 +40,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -442,25 +443,33 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored
 
 	// Foreign keys (part of discovery layer scope logically)
 	if err := c.setupForeignKeys(planned); err != nil {
+		cleanupErr := c.cleanupForeignKeys()
+		if cleanupErr != nil {
+			err = errors.Join(err, cleanupErr)
+		}
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("foreign_key_error", fmt.Sprintf("Failed to setup foreign key handling: %v", err), "copier", true, nil)
 		return fmt.Errorf("failed to setup foreign key handling: %w", err)
 	}
 
 	// Execution
-	err = c.runExecution(ctx, planned)
+	copyErr := c.runExecution(ctx, planned)
 
 	// FK cleanup (always try to restore FKs)
-	c.cleanupForeignKeys()
+	cleanupErr := c.cleanupForeignKeys()
 
 	// Handle execution result
-	if err != nil {
+	if copyErr != nil {
 		// Check if this was a graceful shutdown (context cancelled)
-		if errors.Is(err, context.Canceled) {
+		if errors.Is(copyErr, context.Canceled) && cleanupErr == nil {
 			c.state.SetStatus(state.StatusCancelled)
 			c.state.AddLog(state.LogLevelInfo, "Copy operation cancelled by user", "copier", "", nil)
 			c.finishDisplays()
 			return nil // Not an error - graceful shutdown
+		}
+		err = copyErr
+		if cleanupErr != nil {
+			err = errors.Join(copyErr, cleanupErr)
 		}
 		c.state.SetStatus(state.StatusFailed)
 		c.state.AddError("copy_error", fmt.Sprintf("Copy operation failed: %v", err), "copier", true, nil)
@@ -469,6 +478,12 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored
 		}
 		c.finishDisplays()
 		return err
+	}
+	if cleanupErr != nil {
+		c.state.SetStatus(state.StatusFailed)
+		c.state.AddError("foreign_key_error", fmt.Sprintf("Failed to cleanup foreign keys: %v", cleanupErr), "copier", true, nil)
+		c.finishDisplays()
+		return cleanupErr
 	}
 
 	// Completion
@@ -492,7 +507,7 @@ func (c *Copier) Copy(ctx context.Context) error { //nolint:funlen // refactored
 	// Print concise error summary to STDOUT at the very end (especially for interactive mode)
 	c.printCollectedErrorsToStdout()
 
-	return err
+	return nil
 }
 
 // addPlannedTablesToState updates state with planned tables and returns total rows
@@ -644,24 +659,33 @@ func (c *Copier) buildDependencyLayers(tables []*TableInfo) [][]*TableInfo { //n
 	return layers
 }
 
-// cleanupForeignKeys attempts to recover and cleanup FK artifacts
-func (c *Copier) cleanupForeignKeys() {
+// cleanupForeignKeys attempts to recover and cleanup FK artifacts.
+func (c *Copier) cleanupForeignKeys() error {
+	var cleanupErrors []error
 	if recoveryErr := c.fkManager.RecoverFromBackupFile(); recoveryErr != nil {
 		c.logger.Warn("Failed to recover FKs from backup file: %v", recoveryErr)
+		cleanupErrors = append(cleanupErrors, recoveryErr)
 	}
 	// Attempt a global restore of any dropped FKs (no-op in replica mode)
 	if err := c.fkManager.RestoreAllForeignKeys(); err != nil {
 		c.logger.Warn("Failed to restore FKs globally: %v", err)
+		cleanupErrors = append(cleanupErrors, err)
 	}
 	// Validate NOT VALID constraints restored at the end
 	if err := c.fkManager.ValidateRestoredForeignKeys(); err != nil {
 		c.logger.Warn("Failed to validate restored FKs: %v", err)
+		cleanupErrors = append(cleanupErrors, err)
+	}
+	if len(cleanupErrors) > 0 {
+		return errors.Join(cleanupErrors...)
 	}
 	if c.fkStrategy != nil {
 		if cleanupErr := c.fkStrategy.Cleanup(); cleanupErr != nil {
 			c.logger.Warn("Failed to cleanup FK backup file: %v", cleanupErr)
+			return cleanupErr
 		}
 	}
+	return nil
 }
 
 // waitForWebAckOnFailure waits for web UI acknowledgment on failure
@@ -938,6 +962,9 @@ func ValidateConfig(config *Config) error {
 	if config.TargetConn == "" {
 		return fmt.Errorf("%w: --target connection string must be provided", utils.ErrInvalidConfig)
 	}
+	if sameDatabaseIdentity(config.SourceConn, config.TargetConn) {
+		return fmt.Errorf("%w: --source and --target appear to reference the same database", utils.ErrInvalidConfig)
+	}
 	if config.Parallel < 1 {
 		return fmt.Errorf("%w: parallel workers must be at least 1", utils.ErrInvalidConfig)
 	}
@@ -945,9 +972,38 @@ func ValidateConfig(config *Config) error {
 		return fmt.Errorf("%w: batch size must be at least 100", utils.ErrInvalidConfig)
 	}
 	if config.CompressPipe && !config.UseCopyPipe {
-		return fmt.Errorf("%w: --compress can only be used with --copy-pipe", utils.ErrInvalidConfig)
+		return fmt.Errorf("%w: --compress cannot be used with --legacy-bulk", utils.ErrInvalidConfig)
 	}
 	return nil
+}
+
+func sameDatabaseIdentity(sourceConn, targetConn string) bool {
+	sourceID, sourceOK := postgresDatabaseIdentity(sourceConn)
+	targetID, targetOK := postgresDatabaseIdentity(targetConn)
+	if sourceOK && targetOK {
+		return sourceID == targetID
+	}
+	return strings.TrimSpace(sourceConn) == strings.TrimSpace(targetConn)
+}
+
+func postgresDatabaseIdentity(conn string) (string, bool) {
+	u, err := url.Parse(strings.TrimSpace(conn))
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+		return "", false
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "" {
+		host = strings.ToLower(u.Query().Get("host"))
+	}
+	port := u.Port()
+	if port == "" {
+		port = "5432"
+	}
+	database := strings.TrimPrefix(u.Path, "/")
+	if database == "" {
+		return "", false
+	}
+	return host + ":" + port + "/" + database, true
 }
 
 // checkForFKBackupFile checks if there's an existing FK backup file that indicates
@@ -1205,38 +1261,28 @@ func (c *Copier) handleProgressUpdate(rowsAdded int64) {
 
 // confirmDataOverwrite shows a confirmation dialog for data overwrite operation
 func (c *Copier) confirmDataOverwrite(tables []*TableInfo, totalRows int64) bool {
-	nonEmptyTables := c.filterNonEmptyTables(tables)
-	if len(nonEmptyTables) == 0 {
+	if len(tables) == 0 {
 		return true
 	}
+	tablesToOverwrite := append([]*TableInfo(nil), tables...)
 	// Sort for display
-	sort.Slice(nonEmptyTables, func(i, j int) bool { return nonEmptyTables[i].TotalRows > nonEmptyTables[j].TotalRows })
-	c.printOverwriteWarning(nonEmptyTables, totalRows)
+	sort.Slice(tablesToOverwrite, func(i, j int) bool { return tablesToOverwrite[i].TotalRows > tablesToOverwrite[j].TotalRows })
+	c.printOverwriteWarning(tablesToOverwrite, totalRows)
 	return c.promptYes()
 }
 
-func (c *Copier) filterNonEmptyTables(tables []*TableInfo) []*TableInfo {
-	out := make([]*TableInfo, 0, len(tables))
-	for _, t := range tables {
-		if t.TotalRows > 0 {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-func (c *Copier) printOverwriteWarning(nonEmptyTables []*TableInfo, totalRows int64) {
+func (c *Copier) printOverwriteWarning(tablesToOverwrite []*TableInfo, totalRows int64) {
 	fmt.Printf("\n⚠️  WARNING: Data Overwrite Operation\n")
 	fmt.Printf("═══════════════════════════════════════════════════════════════\n")
 	fmt.Printf("This operation will OVERWRITE data in the destination database:\n\n")
 	destConnDisplay := c.getConnectionDisplay()
 	fmt.Printf("🎯 Destination: %s\n", destConnDisplay)
-	fmt.Printf("📊 Tables to overwrite: %d (with data)\n", len(nonEmptyTables))
+	fmt.Printf("📊 Tables to overwrite: %d\n", len(tablesToOverwrite))
 	fmt.Printf("📈 Total rows to copy: %s\n", utils.FormatNumber(totalRows))
 	fmt.Printf("\n⚠️  ALL EXISTING DATA in these tables will be DELETED:\n")
-	for i, table := range nonEmptyTables {
+	for i, table := range tablesToOverwrite {
 		if i >= 10 {
-			fmt.Printf("   ... and %d more tables\n", len(nonEmptyTables)-10)
+			fmt.Printf("   ... and %d more tables\n", len(tablesToOverwrite)-10)
 			break
 		}
 		fmt.Printf("   • %s.%s (%s rows)\n", table.Schema, table.Name, utils.FormatNumber(table.TotalRows))
