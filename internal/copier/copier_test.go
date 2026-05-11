@@ -68,6 +68,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name: "valid config with connection strings",
+			// #nosec G101 -- placeholder credentials used to validate URL parsing.
 			config: &Config{
 				SourceConn: "postgres://user:pass@source:5432/db",
 				TargetConn: "postgres://user:pass@dest:5432/db",
@@ -116,6 +117,7 @@ func TestValidateConfig(t *testing.T) {
 		},
 		{
 			name: "same source and target database",
+			// #nosec G101 -- placeholder credentials used to validate URL parsing.
 			config: &Config{
 				SourceConn: "postgres://user:pass@localhost/app?sslmode=disable",
 				TargetConn: "postgres://other:secret@localhost:5432/app?sslmode=require",

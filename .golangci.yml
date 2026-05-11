@@ -15,6 +15,9 @@ linters:
     - gosec
     - goconst
     - gocyclo
+  settings:
+    goconst:
+      ignore-tests: true
 
 run:
   timeout: 5m

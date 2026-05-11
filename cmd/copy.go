@@ -104,7 +104,8 @@ func setupTwoPhaseShutdown(cancel context.CancelFunc, info ShutdownInfo) <-chan 
 	return shutdownChan
 }
 
-// copyCmd represents the copy command
+// copyCmd represents the copy command.
+// #nosec G101 -- example connection strings use placeholder credentials.
 var copyCmd = &cobra.Command{
 	Use:   "copy",
 	Short: "Copy data from source to target database",

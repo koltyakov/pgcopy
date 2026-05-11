@@ -13,7 +13,7 @@ import (
 )
 
 // copyTableViaPipe streams data using COPY ... TO STDOUT / FROM STDIN (binary) optionally gzip-compressed.
-func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error { //nolint:funlen
+func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error { //nolint:funlen,gocyclo
 	// Establish pgx connections (separate from existing *sql.DB pool) per table for now.
 	srcConn, err := pgx.Connect(ctx, c.config.SourceConn)
 	if err != nil {

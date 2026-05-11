@@ -21,6 +21,12 @@ const (
 	ColorDim     = "\033[2m"
 )
 
+const (
+	logLevelInfo  = "INFO"
+	logLevelWarn  = "WARN"
+	logLevelError = "ERROR"
+)
+
 // Colorize adds color to text if output supports it
 func Colorize(color, text string) string {
 	if IsColorSupported() {
@@ -46,12 +52,12 @@ func IsColorSupported() bool {
 // FormatLogLevel formats log levels with colors and icons
 func FormatLogLevel(level string) string {
 	switch level {
-	case "INFO":
-		return Colorize(ColorBlue, "INFO")
-	case "WARN":
-		return Colorize(ColorYellow, "WARN")
-	case "ERROR":
-		return Colorize(ColorRed, "ERROR")
+	case logLevelInfo:
+		return Colorize(ColorBlue, logLevelInfo)
+	case logLevelWarn:
+		return Colorize(ColorYellow, logLevelWarn)
+	case logLevelError:
+		return Colorize(ColorRed, logLevelError)
 	default:
 		return Colorize(ColorWhite, "📝 "+level)
 	}

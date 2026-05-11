@@ -28,6 +28,13 @@ import (
 	"github.com/koltyakov/pgcopy/internal/state"
 )
 
+const (
+	websocketMessageTypeKey = "type"
+	websocketStateKey       = "state"
+	stateSnapshotMessage    = "state_snapshot"
+	timestampKey            = "timestamp"
+)
+
 //go:embed templates/index.html
 var indexTemplate string
 
@@ -330,8 +337,8 @@ func (ws *WebServer) handleAPIState(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 
 	if err := json.NewEncoder(w).Encode(map[string]any{
-		"type":  "state_snapshot",
-		"state": snapshot,
+		websocketMessageTypeKey: stateSnapshotMessage,
+		websocketStateKey:       snapshot,
 	}); err != nil {
 		log.Printf("ERROR: Failed to encode state JSON: %v", err)
 	}
@@ -399,9 +406,9 @@ func (ws *WebServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	snapshot := ws.state.GetSnapshot()
 	initialMessage := map[string]any{
-		"type":      "state_snapshot",
-		"state":     snapshot,
-		"timestamp": time.Now(),
+		websocketMessageTypeKey: stateSnapshotMessage,
+		websocketStateKey:       snapshot,
+		timestampKey:            time.Now(),
 	}
 
 	ws.writeMu.Lock()
@@ -498,9 +505,9 @@ func (ws *WebServer) broadcastStateUpdate(event state.Event) {
 	}
 
 	message := map[string]any{
-		"type":      "state_event",
-		"event":     event,
-		"timestamp": time.Now(),
+		websocketMessageTypeKey: "state_event",
+		"event":                 event,
+		timestampKey:            time.Now(),
 	}
 
 	// Also include full state snapshot for major events
@@ -509,8 +516,8 @@ func (ws *WebServer) broadcastStateUpdate(event state.Event) {
 		event.Type == state.EventTableCompleted {
 		snapshot := ws.state.GetSnapshot()
 		message = map[string]any{
-			"type":  "state_snapshot",
-			"state": snapshot,
+			websocketMessageTypeKey: stateSnapshotMessage,
+			websocketStateKey:       snapshot,
 		}
 	}
 
