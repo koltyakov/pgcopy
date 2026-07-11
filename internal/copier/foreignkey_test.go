@@ -102,8 +102,8 @@ func TestForeignKeyManager_buildConstraintDefinition_NoActions(t *testing.T) {
 		ReferencedSchema:  "public",
 		ReferencedTable:   "users",
 		ReferencedColumns: []string{"id"},
-		OnDelete:          "NO ACTION",
-		OnUpdate:          "NO ACTION",
+		OnDelete:          noAction,
+		OnUpdate:          noAction,
 	}
 
 	definition := fkm.buildConstraintDefinition(fk)

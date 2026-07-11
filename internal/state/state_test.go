@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const testUsersFullName = "public.users"
+
 func TestNewCopyState(t *testing.T) {
 	config := OperationConfig{
 		Parallel:  4,
@@ -68,9 +70,9 @@ func TestCopyState_SetStatus_Terminal(t *testing.T) {
 		name           string
 		terminalStatus OperationStatus
 	}{
-		{"completed", StatusCompleted},
-		{"failed", StatusFailed},
-		{"cancelled", StatusCancelled},
+		{string(StatusCompleted), StatusCompleted},
+		{string(StatusFailed), StatusFailed},
+		{string(StatusCancelled), StatusCancelled},
 	}
 
 	for _, tt := range tests {
@@ -103,9 +105,8 @@ func TestCopyState_AddTable(t *testing.T) {
 	if table.Name != "users" {
 		t.Errorf("Expected name 'users', got '%s'", table.Name)
 	}
-	const expectedFullName = "public.users"
-	if table.FullName != expectedFullName {
-		t.Errorf("Expected full name '%s', got '%s'", expectedFullName, table.FullName)
+	if table.FullName != testUsersFullName {
+		t.Errorf("Expected full name '%s', got '%s'", testUsersFullName, table.FullName)
 	}
 	if table.TotalRows != 1000 {
 		t.Errorf("Expected total rows 1000, got %d", table.TotalRows)

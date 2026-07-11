@@ -31,7 +31,14 @@ import (
 const (
 	websocketMessageTypeKey = "type"
 	websocketStateKey       = "state"
+	websocketEventKey       = "event"
+	websocketSummaryKey     = "summary"
+	websocketTablesKey      = "tables"
 	stateSnapshotMessage    = "state_snapshot"
+	stateEventMessage       = "state_event"
+	progressDeltaMessage    = "progress_delta"
+	completionAckMessage    = "completion_ack"
+	pingMessage             = "ping"
 	timestampKey            = "timestamp"
 )
 
@@ -455,13 +462,13 @@ func (ws *WebServer) handleClientMessage(message []byte) {
 		return
 	}
 
-	msgType, ok := msg["type"].(string)
+	msgType, ok := msg[websocketMessageTypeKey].(string)
 	if !ok {
 		return
 	}
 
 	switch msgType {
-	case "completion_ack":
+	case completionAckMessage:
 		// Signal completion acknowledgment received (non-blocking)
 		select {
 		case ws.completionAckChan <- true:
@@ -469,7 +476,7 @@ func (ws *WebServer) handleClientMessage(message []byte) {
 		default:
 			// Channel already has a value - acknowledgment already received
 		}
-	case "ping":
+	case pingMessage:
 		// Client keepalive - no action needed, read timeout was reset
 	default:
 		log.Printf("WARNING: Unknown client message type: %s", msgType)
@@ -505,8 +512,8 @@ func (ws *WebServer) broadcastStateUpdate(event state.Event) {
 	}
 
 	message := map[string]any{
-		websocketMessageTypeKey: "state_event",
-		"event":                 event,
+		websocketMessageTypeKey: stateEventMessage,
+		websocketEventKey:       event,
 		timestampKey:            time.Now(),
 	}
 
@@ -582,9 +589,9 @@ func (ws *WebServer) broadcastSnapshot() {
 	}
 
 	message := map[string]any{
-		"type":      "progress_delta",
-		"timestamp": time.Now(),
-		"summary": map[string]any{
+		websocketMessageTypeKey: progressDeltaMessage,
+		timestampKey:            time.Now(),
+		websocketSummaryKey: map[string]any{
 			"completedTables": snapshot.Summary.CompletedTables,
 			"totalTables":     snapshot.Summary.TotalTables,
 			"syncedRows":      snapshot.Summary.SyncedRows,
@@ -593,7 +600,7 @@ func (ws *WebServer) broadcastSnapshot() {
 			"overallSpeed":    snapshot.Summary.OverallSpeed,
 			"elapsedTime":     snapshot.Summary.ElapsedTime,
 		},
-		"tables": tableProgress,
+		websocketTablesKey: tableProgress,
 	}
 
 	// Create a copy of connections to avoid holding lock during writes

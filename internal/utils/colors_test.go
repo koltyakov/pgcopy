@@ -95,9 +95,9 @@ func TestFormatLogLevel(t *testing.T) {
 		level    string
 		notEmpty bool
 	}{
-		{"INFO", true},
-		{"WARN", true},
-		{"ERROR", true},
+		{logLevelInfo, true},
+		{logLevelWarn, true},
+		{logLevelError, true},
 		{"DEBUG", true},
 		{"UNKNOWN", true},
 	}

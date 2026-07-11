@@ -278,7 +278,7 @@ func TestCopyState_AddForeignKey(t *testing.T) {
 		ConstraintName: "fk_orders_user",
 		SourceTable:    "public.orders",
 		SourceColumns:  []string{"user_id"},
-		TargetTable:    "public.users",
+		TargetTable:    testUsersFullName,
 		TargetColumns:  []string{"id"},
 		OnDelete:       "CASCADE",
 		OnUpdate:       "NO ACTION",

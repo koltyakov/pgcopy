@@ -32,7 +32,7 @@ func TestConfig_Validation(t *testing.T) {
 				TargetConn: "dest connection",
 				Parallel:   2,
 				BatchSize:  500,
-				OutputMode: "raw",
+				OutputMode: string(DisplayModeRaw),
 			},
 		},
 	}
@@ -144,10 +144,10 @@ func TestDisplayMode_StringConversion(t *testing.T) {
 		mode DisplayMode
 		want string
 	}{
-		{"raw mode", DisplayModeRaw, "raw"},
+		{"raw mode", DisplayModeRaw, string(DisplayModeRaw)},
 		{"progress mode", DisplayModeProgress, "progress"},
 		{"interactive mode", DisplayModeInteractive, "interactive"},
-		{"web mode", DisplayModeWeb, "web"},
+		{"web mode", DisplayModeWeb, string(DisplayModeWeb)},
 	}
 
 	for _, tt := range tests {

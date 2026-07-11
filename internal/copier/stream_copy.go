@@ -13,7 +13,7 @@ import (
 )
 
 // copyTableViaPipe streams data using COPY ... TO STDOUT / FROM STDIN (binary) optionally gzip-compressed.
-func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error { //nolint:funlen,gocyclo
+func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error { //nolint:funlen
 	// Establish pgx connections (separate from existing *sql.DB pool) per table for now.
 	srcConn, err := pgx.Connect(ctx, c.config.SourceConn)
 	if err != nil {
@@ -71,35 +71,8 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	defer cancel()
 
 	pr, pw := io.Pipe()
-
-	// Writer goroutine: source -> (optional gzip) -> pipe
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Error("Stream copy writer goroutine panicked: %v", r)
-				pw.CloseWithError(fmt.Errorf("writer panic: %v", r))
-			}
-		}()
-		defer func() { _ = pw.Close() }()
-		var w io.Writer = pw
-		var gz *gzip.Writer
-		if c.config.CompressPipe {
-			gz = gzip.NewWriter(pw)
-			w = gz
-		}
-
-		start := time.Now()
-		// CopyTo returns a CommandTag (which includes row count for COPY TO, not bytes).
-		tag, err := srcConn.PgConn().CopyTo(ctx, w, copyOutSQL)
-		if gz != nil {
-			_ = gz.Close()
-		}
-		if err != nil {
-			pw.CloseWithError(fmt.Errorf("copy out failed: %w", err))
-			return
-		}
-		c.logger.Info("Streamed %s rows from source for %s in %s", utils.FormatNumber(tag.RowsAffected()), utils.HighlightTableName(table.Schema, table.Name), utils.FormatDuration(time.Since(start)))
-	}()
+	defer func() { _ = pr.Close() }()
+	go c.writeCopyStream(ctx, srcConn, pw, copyOutSQL, table)
 
 	// Reader: pipe -> (optional gunzip) -> dest COPY IN
 	var r io.Reader = pr
@@ -119,62 +92,7 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	// Optional progress poller (PostgreSQL 14+): sample pg_stat_progress_copy for this backend PID.
 	// Uses a separate connection because dstConn is busy with COPY FROM. If the view isn't available,
 	// or no row is visible, the poller exits quietly.
-	stopPoll := make(chan struct{})
-	pollDone := make(chan struct{})
-	progCtx, cancelPoll := context.WithCancel(ctx)
-	var progressRows atomic.Int64
-	go func(schema, name string, pid uint32, _ int64) {
-		defer close(pollDone)
-		defer func() {
-			if r := recover(); r != nil {
-				c.logger.Error("Progress poller goroutine panicked: %v", r)
-			}
-		}()
-		conn, err := pgx.Connect(progCtx, c.config.TargetConn)
-		if err != nil {
-			// Can't poll, just return silently
-			return
-		}
-		defer func() { _ = conn.Close(progCtx) }()
-
-		t := time.NewTicker(500 * time.Millisecond)
-		defer t.Stop()
-
-		var last int64
-		for {
-			select {
-			case <-stopPoll:
-				return
-			case <-progCtx.Done():
-				return
-			case <-t.C:
-				var processed int64
-				// Note: pg_stat_progress_copy exists in PG14+. For STDIN streams, bytes_total may be NULL/0.
-				// We rely on tuples_processed and our planned TotalRows as denominator.
-				err = conn.QueryRow(progCtx, `
-					select coalesce(tuples_processed, 0)
-					from pg_stat_progress_copy
-					where pid = $1
-					limit 1`, int(pid)).Scan(&processed) //nolint:gosec // PID narrowing to int for query parameter is safe on supported platforms
-				if err != nil {
-					// If the view isn't present or row not visible, stop polling.
-					return
-				}
-				if processed > last {
-					inc := processed - last
-					last = processed
-					progressRows.Store(processed)
-					c.updateTableProgress(schema, name, processed)
-					c.updateProgress(inc)
-				}
-			}
-		}
-	}(table.Schema, table.Name, dstConn.PgConn().PID(), table.TotalRows)
-	stopProgressPoll := func() {
-		cancelPoll()
-		close(stopPoll)
-		<-pollDone
-	}
+	progressRows, stopProgressPoll := c.startCopyProgressPoller(ctx, table, dstConn.PgConn().PID())
 
 	startIn := time.Now()
 	tag, err := tx.Conn().PgConn().CopyFrom(ctx, r, copyInSQL)
@@ -201,4 +119,97 @@ func (c *Copier) copyTableViaPipe(ctx context.Context, table *TableInfo) error {
 	}
 
 	return nil
+}
+
+func (c *Copier) writeCopyStream(ctx context.Context, srcConn *pgx.Conn, pw *io.PipeWriter, copyOutSQL string, table *TableInfo) {
+	var streamErr error
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			c.logger.Error("Stream copy writer goroutine panicked: %v", recovered)
+			streamErr = fmt.Errorf("writer panic: %v", recovered)
+		}
+		_ = pw.CloseWithError(streamErr)
+	}()
+
+	var writer io.Writer = pw
+	var gz *gzip.Writer
+	if c.config.CompressPipe {
+		gz = gzip.NewWriter(pw)
+		writer = gz
+	}
+
+	start := time.Now()
+	// CopyTo returns a CommandTag whose row count describes copied rows, not bytes.
+	tag, err := srcConn.PgConn().CopyTo(ctx, writer, copyOutSQL)
+	if err != nil {
+		streamErr = fmt.Errorf("copy out failed: %w", err)
+		return
+	}
+	if gz != nil {
+		if err := gz.Close(); err != nil {
+			streamErr = fmt.Errorf("close gzip writer: %w", err)
+			return
+		}
+	}
+
+	c.logger.Info("Streamed %s rows from source for %s in %s", utils.FormatNumber(tag.RowsAffected()), utils.HighlightTableName(table.Schema, table.Name), utils.FormatDuration(time.Since(start)))
+}
+
+func (c *Copier) startCopyProgressPoller(ctx context.Context, table *TableInfo, pid uint32) (*atomic.Int64, func()) {
+	progressRows := &atomic.Int64{}
+	pollCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				c.logger.Error("Progress poller goroutine panicked: %v", recovered)
+			}
+		}()
+		c.pollCopyProgress(pollCtx, table, pid, progressRows)
+	}()
+
+	stop := func() {
+		cancel()
+		<-done
+	}
+	return progressRows, stop
+}
+
+func (c *Copier) pollCopyProgress(ctx context.Context, table *TableInfo, pid uint32, progressRows *atomic.Int64) {
+	conn, err := pgx.Connect(ctx, c.config.TargetConn)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close(ctx) }()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	var last int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			var processed int64
+			// pg_stat_progress_copy exists in PostgreSQL 14+. Missing rows or views stop polling quietly.
+			err = conn.QueryRow(ctx, `
+				select coalesce(tuples_processed, 0)
+				from pg_stat_progress_copy
+				where pid = $1
+				limit 1`, int(pid)).Scan(&processed) //nolint:gosec // PID narrowing to int is safe on supported platforms
+			if err != nil {
+				return
+			}
+			if processed > last {
+				increment := processed - last
+				last = processed
+				progressRows.Store(processed)
+				c.updateTableProgress(table.Schema, table.Name, processed)
+				c.updateProgress(increment)
+			}
+		}
+	}
 }

@@ -14,10 +14,10 @@ func TestLogLevel_slogLevel(t *testing.T) {
 		expected string
 	}{
 		{LevelDebug, "DEBUG"},
-		{LevelInfo, "INFO"},
-		{LevelWarn, "WARN"},
-		{LevelError, "ERROR"},
-		{LogLevel(99), "INFO"}, // Unknown defaults to INFO
+		{LevelInfo, logLevelInfo},
+		{LevelWarn, logLevelWarn},
+		{LevelError, logLevelError},
+		{LogLevel(99), logLevelInfo}, // Unknown defaults to INFO
 	}
 
 	for _, tt := range tests {

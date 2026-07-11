@@ -15,9 +15,13 @@ linters:
     - gosec
     - goconst
     - gocyclo
-  settings:
-    goconst:
-      ignore-tests: true
-
+  exclusions:
+    rules:
+      # Repeated values are intentional table-test inputs; still flag literals
+      # when a production constant already exists.
+      - path: _test\.go
+        text: make it a constant
+        linters:
+          - goconst
 run:
   timeout: 5m
